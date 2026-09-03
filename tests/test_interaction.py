@@ -127,6 +127,38 @@ def test_release_inside_experiment_area_is_placed():
     assert event.state == InteractionState.OBJECT_PLACED
 
 
+def test_placed_state_persists_until_retouched():
+    reasoner = InteractionReasoner(_settings())
+    area_center = (500.0, 380.0)
+    reasoner.update(_frame(0, area_center, (area_center[0] + 10, area_center[1])))
+    reasoner.update(_frame(1, area_center, (area_center[0] + 10, area_center[1])))
+    placed = reasoner.update(_frame(2, area_center, (50.0, 50.0)))["red_box"]
+    assert placed.state == InteractionState.OBJECT_PLACED
+
+    # Hand stays far away, box hasn't moved -> still placed, several frames later.
+    for i in range(3, 8):
+        ev = reasoner.update(_frame(i, area_center, (50.0, 50.0)))["red_box"]
+        assert ev.state == InteractionState.OBJECT_PLACED
+        assert ev.changed is False
+
+    # Hand comes back and touches it -> restarts the touch/hold cycle rather
+    # than staying stuck in PLACED forever.
+    retouch = reasoner.update(_frame(8, area_center, (area_center[0] + 10, area_center[1])))["red_box"]
+    assert retouch.state == InteractionState.HAND_TOUCHING_OBJECT
+
+
+def test_released_state_persists_until_retouched():
+    reasoner = InteractionReasoner(_settings())
+    reasoner.update(_frame(0, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
+    reasoner.update(_frame(1, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
+    released = reasoner.update(_frame(2, OUTSIDE_EXPERIMENT_AREA, (400.0, 400.0)))["red_box"]
+    assert released.state == InteractionState.OBJECT_RELEASED
+
+    ev = reasoner.update(_frame(3, OUTSIDE_EXPERIMENT_AREA, (400.0, 400.0)))["red_box"]
+    assert ev.state == InteractionState.OBJECT_RELEASED
+    assert ev.changed is False
+
+
 def test_occlusion_gap_preserves_held_state():
     reasoner = InteractionReasoner(_settings())
     box = (100.0, 100.0)

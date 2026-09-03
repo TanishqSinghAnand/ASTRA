@@ -35,7 +35,7 @@ _HISTORY_LEN = 8
 _PALM_LANDMARKS = {"wrist", "index_mcp", "pinky_mcp"}
 
 
-def _bbox_center(bbox: BBox) -> tuple[float, float]:
+def bbox_center(bbox: BBox) -> tuple[float, float]:
     return ((bbox.x1 + bbox.x2) / 2.0, (bbox.y1 + bbox.y2) / 2.0)
 
 
@@ -52,7 +52,7 @@ def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
-def _point_in_bbox(point: tuple[float, float], bbox: BBox) -> bool:
+def point_in_bbox(point: tuple[float, float], bbox: BBox) -> bool:
     x, y = point
     return bbox.x1 <= x <= bbox.x2 and bbox.y1 <= y <= bbox.y2
 
@@ -134,7 +134,7 @@ class InteractionReasoner:
                 return track.state
             return InteractionState.NONE
 
-        box_center = _bbox_center(obj.bbox)
+        box_center = bbox_center(obj.bbox)
         nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
         distance = _dist(nearest_hand, box_center)
 
@@ -148,15 +148,30 @@ class InteractionReasoner:
             InteractionState.OBJECT_BEING_HELD,
             InteractionState.OBJECT_MOVING_WITH_HAND,
         )
+        currently_resting = track.state in (
+            InteractionState.OBJECT_RELEASED,
+            InteractionState.OBJECT_PLACED,
+        )
 
         if currently_held:
             if distance <= touch_threshold:
                 return InteractionState.OBJECT_MOVING_WITH_HAND if self._is_moving(track) else InteractionState.OBJECT_BEING_HELD
             # Hand pulled away while holding -> released, either into the
             # experiment area (placed) or elsewhere (just dropped/released).
-            if experiment_area is not None and _point_in_bbox(box_center, experiment_area.bbox):
+            if experiment_area is not None and point_in_bbox(box_center, experiment_area.bbox):
                 return InteractionState.OBJECT_PLACED
             return InteractionState.OBJECT_RELEASED
+
+        if currently_resting:
+            # A placed/released object doesn't spontaneously go back to
+            # NONE just because the hand that let go of it moved away — it
+            # physically stays where it was left. Only a hand actually
+            # touching it again restarts the touch/hold cycle; this also
+            # gives Phase 4's temporal smoother something that holds stable
+            # across frames to debounce, instead of a one-frame edge event.
+            if distance <= touch_threshold:
+                return InteractionState.HAND_TOUCHING_OBJECT
+            return track.state
 
         if distance <= touch_threshold:
             # Require a HAND_TOUCHING_OBJECT frame before counting the

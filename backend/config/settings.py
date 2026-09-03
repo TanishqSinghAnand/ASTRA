@@ -40,6 +40,7 @@ class ColorSpec(BaseModel):
 class PerceptionSettings(BaseModel):
     confidence_threshold: float = 0.60
     hand_object_distance_px: int = 80
+    hand_object_touch_distance_px: int = 40
     min_box_contour_area: int = 800
     experiment_area: tuple[float, float, float, float] = (0.55, 0.55, 0.85, 0.85)
     colors: dict[str, ColorSpec] = Field(default_factory=dict)

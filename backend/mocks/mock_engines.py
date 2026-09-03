@@ -34,8 +34,11 @@ class MockPerceptionEngine(PerceptionEngine):
     perception/detector.py + pose.py + hands.py in Phase 2."""
 
     def process(self, frame: np.ndarray, frame_index: int) -> PerceptionFrame:
+        h, w = frame.shape[:2]
         return PerceptionFrame(
             frame_index=frame_index,
+            frame_width=w,
+            frame_height=h,
             objects=[],
             pose=PoseFrame(
                 detected=True,

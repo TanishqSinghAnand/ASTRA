@@ -20,6 +20,7 @@ camera:
 perception:
   confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
   hand_object_distance_px: 80     # HAND_APPROACHING_OBJECT threshold
+  hand_object_touch_distance_px: 40  # HAND_TOUCHING_OBJECT threshold (Phase 3)
   min_box_contour_area: 800       # ignore color-noise smaller than this
 
   # Experiment area, as a fraction of frame [x1, y1, x2, y2] (0-1). There's no

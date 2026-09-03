@@ -24,11 +24,14 @@ class RealPerceptionEngine(PerceptionEngine):
         self.hands = HandEstimator()
 
     def process(self, frame: np.ndarray, frame_index: int) -> PerceptionFrame:
+        h, w = frame.shape[:2]
         objects = self.detector.detect(frame)
         pose_frame = self.pose.process(frame)
         hand_frames = self.hands.process(frame)
         return PerceptionFrame(
             frame_index=frame_index,
+            frame_width=w,
+            frame_height=h,
             objects=objects,
             pose=pose_frame,
             hands=hand_frames,

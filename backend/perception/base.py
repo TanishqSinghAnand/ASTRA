@@ -58,6 +58,14 @@ class PerceptionFrame(BaseModel):
 
     timestamp: float = Field(default_factory=time.time)
     frame_index: int = 0
+    # Pixel dimensions of the source frame. Needed because MediaPipe
+    # landmarks (pose/hands) come back normalized 0-1 while DetectedObject
+    # bboxes (from color_detector.py) are already pixel-space — anything
+    # comparing the two (Phase 3's InteractionReasoner) needs both in the
+    # same units. 0 means "unknown" (e.g. a producer that predates this
+    # field); consumers must treat that as "cannot do pixel-space math".
+    frame_width: int = 0
+    frame_height: int = 0
     objects: list[DetectedObject] = Field(default_factory=list)
     pose: PoseFrame = Field(default_factory=PoseFrame)
     hands: list[HandFrame] = Field(default_factory=list)

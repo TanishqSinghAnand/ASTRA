@@ -1,0 +1,78 @@
+# ASTRA — Prototype configuration
+# Every tunable that affects demo behavior lives here, not scattered through
+# code, so a judge-facing tweak (thresholds, camera index, feature flags)
+# never means editing Python.
+
+# --- Camera / video input ---
+camera:
+  # source: "webcam" | "video_file" | "synthetic"
+  #   webcam     -> live OpenCV VideoCapture(camera_index)
+  #   video_file -> plays back a recorded clip (Demo Mode)
+  #   synthetic  -> procedurally generated test clip (used for headless dev/testing)
+  source: synthetic
+  camera_index: 0
+  frame_width: 1280
+  frame_height: 720
+  target_fps: 30
+  video_file_path: "data/recordings/demo_clip.mp4"
+
+# --- Perception thresholds ---
+perception:
+  confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
+  hand_object_distance_px: 80     # HAND_APPROACHING_OBJECT threshold
+  min_box_contour_area: 800       # ignore color-noise smaller than this
+
+  # Experiment area, as a fraction of frame [x1, y1, x2, y2] (0-1). There's no
+  # physical marker to detect on a real tabletop, so this is a fixed
+  # calibrated region rather than a color-detected object — matches where
+  # synthetic_scene.py draws it, so the detector can be tested against the
+  # synthetic source before ever touching a real camera.
+  experiment_area: [0.55, 0.55, 0.85, 0.85]
+
+  # HSV thresholds for the color-based box detector (Phase 2). THESE ARE
+  # STARTING POINTS, TUNED AGAINST THE SYNTHETIC TEST PATTERN, NOT A REAL
+  # ROOM. Lighting varies a lot — if detection is unreliable on your actual
+  # boxes, run `python tools/calibrate_hsv.py` to find better ranges
+  # interactively and paste the results back in here. Red needs two ranges
+  # because its hue wraps around 0/179 in OpenCV's HSV space.
+  colors:
+    red_box:
+      ranges:
+        - lower: [0, 120, 70]
+          upper: [10, 255, 255]
+        - lower: [170, 120, 70]
+          upper: [180, 255, 255]
+    blue_box:
+      ranges:
+        - lower: [100, 110, 60]
+          upper: [128, 255, 255]
+
+# --- Temporal smoothing / hysteresis (used from Phase 4/6 onward) ---
+temporal:
+  action_stability_frames: 6      # a prediction must hold for N frames to count
+  min_confidence_duration_ms: 300
+
+# --- Feature flags ---
+features:
+  enable_voice: true
+  enable_recording: true
+  enable_streaming: false         # optional IP/MJPEG stream, off by default
+  demo_mode: true                 # true while camera.source != "webcam"
+
+# --- Inference device ---
+# auto -> use CUDA if a compatible model/runtime reports it available, else CPU.
+# MVP perception (MediaPipe) runs on CPU regardless; this flag matters once a
+# trained detector is swapped in during the training-pipeline phase.
+model_device: auto
+
+# --- Paths ---
+paths:
+  experiment_config: "experiments/bas_sample_001.json"
+  recordings_dir: "data/recordings"
+  reports_dir: "data/reports"
+  raw_data_dir: "data/raw"
+
+# --- Backend server ---
+server:
+  host: "0.0.0.0"
+  port: 8000

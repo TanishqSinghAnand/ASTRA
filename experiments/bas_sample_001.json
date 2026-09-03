@@ -1,0 +1,49 @@
+{
+  "experiment_id": "BAS_SAMPLE_001",
+  "name": "Sample Payload Experiment",
+  "description": "Ground-based tabletop stand-in for an on-board BAS experiment: pick and place a red container and a blue container into the experiment area in the correct order.",
+  "objects": {
+    "RED_BOX": { "label": "red container", "color_hint": "red" },
+    "BLUE_BOX": { "label": "blue container", "color_hint": "blue" },
+    "EXPERIMENT_AREA": { "label": "experiment area", "color_hint": null }
+  },
+  "steps": [
+    {
+      "id": 1,
+      "action": "PICK",
+      "object": "RED_BOX",
+      "instruction": "Pick up the RED container.",
+      "voice_next": "Next, pick up the red container."
+    },
+    {
+      "id": 2,
+      "action": "PLACE",
+      "object": "RED_BOX",
+      "target": "EXPERIMENT_AREA",
+      "instruction": "Place the RED container in the experiment area.",
+      "voice_next": "Next, place the red container in the experiment area."
+    },
+    {
+      "id": 3,
+      "action": "PICK",
+      "object": "BLUE_BOX",
+      "instruction": "Pick up the BLUE container.",
+      "voice_next": "Next, pick up the blue container."
+    },
+    {
+      "id": 4,
+      "action": "PLACE",
+      "object": "BLUE_BOX",
+      "target": "EXPERIMENT_AREA",
+      "instruction": "Place the BLUE container in the experiment area.",
+      "voice_next": "Next, place the blue container in the experiment area."
+    },
+    {
+      "id": 5,
+      "action": "COMPLETE",
+      "object": "EXPERIMENT",
+      "instruction": "Close out the experiment.",
+      "voice_next": "Experiment completed successfully."
+    }
+  ]
+}

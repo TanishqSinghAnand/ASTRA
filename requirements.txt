@@ -1,0 +1,31 @@
+# ASTRA backend — Phase 0/1 dependencies
+# NOTE: mediapipe/opencv power the real perception layer added in Phase 2+.
+# They are listed now so `pip install -r requirements.txt` sets up the full
+# environment in one shot even though Phase 0/1 code only exercises the
+# camera/mock/API skeleton.
+
+# --- Web backend ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==13.1
+pydantic==2.9.2
+python-multipart==0.0.9
+PyYAML==6.0.2
+
+# --- Computer vision / perception (used from Phase 2 onward) ---
+opencv-python==4.10.0.84
+mediapipe==0.10.14
+
+# --- Voice (used from Phase 7 onward) ---
+pyttsx3==2.98
+
+# --- Data / utils ---
+numpy==1.26.4
+pandas==2.2.2
+
+# --- Testing ---
+pytest==8.3.3
+httpx==0.27.2
+
+# --- Training pipeline (used from Phase 12 onward; optional for MVP demo) ---
+scikit-learn==1.5.2

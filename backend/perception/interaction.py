@@ -39,7 +39,7 @@ def bbox_center(bbox: BBox) -> tuple[float, float]:
     return ((bbox.x1 + bbox.x2) / 2.0, (bbox.y1 + bbox.y2) / 2.0)
 
 
-def _hand_center_px(hand: HandFrame, frame_w: int, frame_h: int) -> tuple[float, float] | None:
+def hand_center_px(hand: HandFrame, frame_w: int, frame_h: int) -> tuple[float, float] | None:
     pts = [lm for lm in hand.landmarks if lm.name in _PALM_LANDMARKS]
     if len(pts) < len(_PALM_LANDMARKS):
         return None
@@ -104,7 +104,7 @@ class InteractionReasoner:
         hand_centers = [
             c
             for h in frame.hands
-            if (c := _hand_center_px(h, frame.frame_width, frame.frame_height)) is not None
+            if (c := hand_center_px(h, frame.frame_width, frame.frame_height)) is not None
         ]
 
         events: dict[str, InteractionEvent] = {}

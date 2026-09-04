@@ -19,6 +19,7 @@ from backend.perception.base import ActionPrediction, PerceptionFrame, SequenceE
 from backend.perception.interfaces import ActionRecognizer, PerceptionEngine, SequenceEngine
 from backend.services.camera_service import CameraError, CameraService
 from backend.services.frame_utils import encode_frame_jpeg_b64
+from backend.services.voice_service import VoiceService
 
 logger = logging.getLogger("astra.inference")
 
@@ -38,6 +39,7 @@ class InferenceService:
         self.sequence_engine: SequenceEngine = RuleBasedSequenceEngine(
             experiment, settings.perception.confidence_threshold
         )
+        self.voice = VoiceService(experiment, enabled=settings.features.enable_voice)
 
         self.status: str = "IDLE"  # IDLE | RUNNING | FINISHED | STOPPED | ERROR
         self.error_message: str | None = None
@@ -90,6 +92,7 @@ class InferenceService:
         self.error_message = None
         self.status = "RUNNING"
         self.started_at = time.time()
+        self.voice.start()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Inference loop started")
 
@@ -98,6 +101,7 @@ class InferenceService:
             self._task.cancel()
             self._task = None
         self.camera.stop()
+        self.voice.stop()
         if self.status == "RUNNING":
             self.status = "STOPPED"
         logger.info("Inference loop stopped")
@@ -157,6 +161,7 @@ class InferenceService:
                     event = self.sequence_engine.submit_action(prediction)
                     if event is not None:
                         self.event_log.append(event)
+                        self.voice.on_sequence_event(event)
                         await self._broadcast({"type": "sequence_event", **event.model_dump()})
                         if self.sequence_engine.is_finished():
                             self.status = "FINISHED"

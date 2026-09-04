@@ -16,19 +16,52 @@ the correction and lets the experiment continue. The goal is to demonstrate
 **procedural intelligence**: not just "what object is this" or "what pose is
 this," but *what is supposed to happen next, and was it?*
 
-## Current status: Phase 0 + Phase 1 complete
+## Current status: Phases 0–12 complete
 
-This repository is being built incrementally (see [Development Phases](#development-phases)).
-**What exists right now and is fully runnable:**
+The system is fully wired end-to-end: real webcam perception, rule-based
+action recognition, full sequence validation, voice guidance, persistent
+logging, video recording, and a live React dashboard. See
+[Development Phases](#development-phases) for what each phase added, and
+`docs/demo.md` for how to actually run it.
 
-- Full repo scaffold, config system, and the 5-step sample experiment as data (not hardcoded).
-- A threaded camera capture layer with **three interchangeable sources** — `webcam`, `video_file`, and `synthetic` (a procedurally generated test pattern, used here because this dev environment has no physical camera).
-- The **real, deterministic sequence-validation engine** (`backend/experiment/validator.py`) — not a mock — checked against the actual experiment config. It already implements CORRECT / OUT_OF_SEQUENCE / REPEATED_STEP / RECOVERED / LOW_CONFIDENCE / COMPLETE.
-- Mock perception + mock temporal action recognizer (per the spec's "build mock inference interfaces first" guidance) that play back the canonical demo scenario: two correct steps → a deliberate wrong action → detection → recovery → completion. This exercises the *entire* CAMERA → PERCEPTION → ACTION → SEQUENCE → OUTPUT loop end-to-end today, before any real computer vision is wired in.
-- A FastAPI backend exposing the REST + WebSocket API, verified live (see [Verification](#verification-already-performed)).
-- 15 passing unit tests for experiment loading and sequence validation (no camera/hardware required).
+**What's real and running today:**
 
-**Not yet built** (see the phase list): real MediaPipe/HSV perception, hand-object interaction reasoning, the rule-based temporal recognizer, the full state machine (with SKIPPED_STEP vs OUT_OF_SEQUENCE distinguished), voice guidance, persistent logging/reports, video recording, the React dashboard, dataset tooling, and training scripts. Each is scoped and will replace the current mocks/stubs one phase at a time.
+- Threaded camera capture with three interchangeable sources — `webcam`,
+  `video_file`, `synthetic`.
+- **Real perception**: HSV color detection (red/blue box + experiment
+  area) and MediaPipe pose + hand tracking, composed into one
+  `RealPerceptionEngine`.
+- **Hand-object interaction reasoning**: a per-object state machine
+  (approach → touch → hold → move → release/place) driving actual pick/
+  place detection, not just raw landmark positions.
+- **Rule-based temporal action recognizer**: turns interaction state
+  transitions into stability-debounced `PICK_*`/`PLACE_*` actions.
+- **Full sequence validation**: CORRECT / WRONG_OBJECT / SKIPPED_STEP /
+  OUT_OF_SEQUENCE / REPEATED_STEP / LOW_CONFIDENCE / RECOVERED / COMPLETE,
+  each genuinely distinguished by *why* a mismatch happened, not just that
+  one did — plus automatic advancement through the final "close out the
+  experiment" step (no gesture exists for that one).
+- **Offline voice guidance** (pyttsx3, background thread) — proactively
+  tells the astronaut what to do next on success, explains what went wrong
+  on a deviation.
+- **Persistent logging**: every event to a JSONL run log, plus a final
+  `experiment_report.json` (per-step first-try-correct vs.
+  needed-correction, total deviations, duration).
+- **Annotated video recording** of every run.
+- **A live React (Next.js) dashboard** — camera feed with detection
+  overlay, step checklist, error/recovery banners, scrolling event log,
+  Start/Stop/Reset — all driven by real REST + WebSocket data, no scripted
+  replay.
+- **Dataset recording + training-pipeline scaffolding** (`tools/
+  record_dataset.py`, `training/`) — explicitly a placeholder; the real
+  action recognition is rule-based and needs none of this to work.
+- The original scripted mock perception/action engines are **still there**
+  as an opt-in fallback (`features.use_mock_engines`) for headless/CI
+  verification with no camera or props.
+- 79 passing unit tests — every layer (color detection, interaction
+  reasoning, action recognition, sequence validation, voice, logging,
+  recording, feature extraction) is independently, deterministically
+  tested with no camera or hardware required.
 
 ## Why a virtual environment
 
@@ -39,63 +72,28 @@ exact versions in `requirements.txt` are what actually run.
 
 ## Architecture
 
+See **`docs/architecture.md`** for the full picture — layer separation,
+why every layer is rule-based rather than a trained model, the mismatch
+classification logic, the gotchas already found and fixed, and the
+complete directory layout. Short version:
+
 ```
 CAMERA → VIDEO CAPTURE → FRAME PREPROCESSING
   → PERCEPTION (objects / pose / hands)
   → TEMPORAL ACTION RECOGNITION
   → EXPERIMENT STATE MACHINE + SEQUENCE VALIDATION
-  → DECISION ENGINE (CORRECT / WRONG / SKIPPED / REPEATED / RECOVERY)
-  → OUTPUT (GUI, voice, event log, recording, optional stream)
+  → DECISION ENGINE (CORRECT / WRONG_OBJECT / SKIPPED_STEP / OUT_OF_SEQUENCE
+     / REPEATED_STEP / LOW_CONFIDENCE / RECOVERED / COMPLETE)
+  → OUTPUT (dashboard, voice, event log, recording)
 ```
 
-**Perception vs. reasoning is a hard separation in the code** (spec principle):
-Perception (`backend/perception/`) only answers "what do I see?" — objects,
-pose, hands. It knows nothing about experiments. The sequence layer
+**Perception vs. reasoning is a hard separation in the code**: perception
+(`backend/perception/`) only answers "what do I see?" and knows nothing
+about experiments; temporal recognition (`backend/temporal/`) only
+answers "what is happening, over time?"; the sequence layer
 (`backend/experiment/`) only answers "what does this mean for the
-procedure?" — it consumes a recognized action and the known procedure, and
-is deliberately **not** an ML model: the procedure is known in advance, so
-correctness is decided with explicit, inspectable rules.
-
-**Why HSV color detection instead of a trained object detector for the
-red/blue boxes:** a COCO-pretrained detector has no concept of "red box" vs
-"blue box," and training a custom one requires labeled data before *any*
-demo works — which would block the MVP entirely. HSV thresholding needs zero
-training data, runs in milliseconds on CPU, and returns the exact same
-`{class, confidence, bbox}` shape a trained detector would — so it's a
-drop-in replacement once/if a trained model is added later (see
-`docs/architecture.md`, added in a later phase).
-
-Full repo layout:
-
-```
-astra/
-├── backend/
-│   ├── main.py                 # FastAPI app
-│   ├── api/routes.py           # REST endpoints
-│   ├── websocket/live.py       # /ws/live
-│   ├── config/settings.py      # config.yaml + env overrides
-│   ├── services/
-│   │   ├── camera_service.py   # threaded capture: webcam | video_file | synthetic
-│   │   ├── inference_service.py# orchestrates the per-frame pipeline + WS broadcast
-│   │   ├── synthetic_scene.py  # procedural test-pattern generator
-│   │   └── frame_utils.py
-│   ├── perception/
-│   │   ├── base.py             # shared schemas (DetectedObject, PerceptionFrame, ...)
-│   │   └── interfaces.py       # PerceptionEngine / ActionRecognizer / SequenceEngine ABCs
-│   ├── experiment/
-│   │   ├── experiment_loader.py# loads + validates experiment JSON
-│   │   └── validator.py        # real rule-based sequence validation
-│   └── mocks/mock_engines.py   # scripted mock perception + action recognizer
-├── experiments/bas_sample_001.json
-├── config/config.yaml
-├── tools/
-│   ├── test_camera.py
-│   ├── make_synthetic_clip.py
-│   └── _ws_smoke_test.py       # manual end-to-end WebSocket check (not pytest)
-├── tests/                      # pytest — no camera required
-├── frontend/                   # scaffolded, not yet built (Phase 10)
-└── data/{raw,processed,annotations,models,recordings,reports}
-```
+procedure?" — and is deliberately **not** an ML model, since the
+procedure is known in advance.
 
 ## The sample experiment
 
@@ -106,141 +104,115 @@ on-board BAS experiment — nothing about it is hardcoded in Python:
 2. PLACE the RED container in the experiment area
 3. PICK the BLUE container
 4. PLACE the BLUE container in the experiment area
-5. COMPLETE the experiment
+5. COMPLETE the experiment (auto-advanced — no gesture for this one)
 
 Swapping in a different procedure later is a matter of writing a new JSON
 file in the same shape, not touching code.
 
 ## Installation
 
-Requires Python 3.11+.
-
 ```bash
-cd astra
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+cd astra_phase0_1
+python -m venv .venv
+.venv\Scripts\activate           # Windows; source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
+
+cd frontend
+npm install
 ```
 
-## Running the backend
+## Running the full system
+
+See **`docs/demo.md`** for the complete walkthrough (webcam setup, HSV
+calibration, troubleshooting, the mock-engine fallback). Quick version:
 
 ```bash
-source .venv/bin/activate
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+# Terminal 1 — backend
+CAMERA_SOURCE=webcam CAMERA_INDEX=0 uvicorn backend.main:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend && npm run dev
 ```
 
-By default `config/config.yaml` sets `camera.source: synthetic`, so this
-runs with **no webcam required** — useful for development, CI, or this
-sandbox. Open `http://localhost:8000/docs` for interactive API docs.
-
-To use a real webcam instead (on your own machine):
-
-```yaml
-# config/config.yaml
-camera:
-  source: webcam
-  camera_index: 0
-```
-
-or override without editing the file: `CAMERA_SOURCE=webcam CAMERA_INDEX=0 uvicorn backend.main:app`.
-
-### Try it
-
-```bash
-# Check status
-curl http://localhost:8000/api/status
-
-# Start the experiment (spins up the camera + inference loop)
-curl -X POST http://localhost:8000/api/experiment/start
-
-# Watch the sequence unfold live (requires: pip install websockets)
-python tools/_ws_smoke_test.py
-```
-
-`tools/_ws_smoke_test.py` prints every `sequence_event` as it happens; with
-the default synthetic source and mock engines you'll see the canonical demo
-scenario play out automatically: two correct steps, a deliberate deviation,
-detection, recovery, and completion — the same closed loop described in the
-problem statement's target demo flow.
+Open `http://localhost:3000`. By default `config/config.yaml` sets
+`camera.source: synthetic`, so the backend also runs with **no webcam
+required** — useful for development/CI. Interactive API docs are at
+`http://localhost:8000/docs`.
 
 ### Camera / clip utilities
 
 ```bash
-# Sanity-check any camera source in isolation (saves a sample frame):
-python tools/test_camera.py --source synthetic --seconds 3 --no-display
-
-# On your own machine with a webcam attached:
+# Sanity-check any camera source in isolation:
 python tools/test_camera.py --source webcam --index 0
 
-# Render the synthetic test pattern to an .mp4 (useful as a video_file source):
-python tools/make_synthetic_clip.py --seconds 25 --out data/recordings/demo_clip.mp4
+# Exercise real perception standalone, without the backend running:
+python tools/live_preview.py --source webcam --index 0
+
+# Interactively tune HSV ranges if detection is unreliable under your lighting:
+python tools/calibrate_hsv.py --source webcam --color red_box
+
+# Record a labeled dataset (Phase 12 groundwork):
+python tools/record_dataset.py --source webcam
 ```
 
 ## Testing
 
 ```bash
-source .venv/bin/activate
 pytest tests/ -v
 ```
 
-15 tests currently cover experiment-config loading/validation and every
-sequence-validation scenario named in the spec (correct sequence, wrong
-action, skipped step, recovery, repeated step, completion, low confidence,
-reset) — all without needing a camera or any ML model.
-
-## Verification already performed
-
-Everything above has actually been run, not just written:
-
-- `pytest tests/` → **15/15 passed**.
-- Backend started with `uvicorn` and exercised live: `/`, `/api/status`,
-  `/api/experiment`, `POST /api/experiment/start` all returned correct
-  responses; camera FPS measured at ~29.8 fps on the synthetic source.
-- `/ws/live` streamed the full canonical demo scenario end-to-end —
-  `PICK_RED_BOX` (CORRECT) → `PICK_BLUE_BOX` (OUT_OF_SEQUENCE, expected
-  `PLACE_RED_BOX`) → `PLACE_RED_BOX` (RECOVERED) → `PICK_BLUE_BOX` (CORRECT)
-  → `PLACE_BLUE_BOX` (CORRECT) → `COMPLETE_EXPERIMENT` (COMPLETE) — with
-  live-camera JPEG frames also arriving over the same socket.
-
-No performance numbers (FPS, latency, accuracy) beyond what's explicitly
-stated above have been measured; none are claimed.
+79 tests cover every layer deterministically — HSV color detection,
+hand-object interaction reasoning, the temporal action recognizer,
+full sequence validation (all 8 statuses), voice message construction,
+persistent logging, video recording, and feature extraction — none of it
+needs a camera, a display, or real hardware. Interactive tools
+(`live_preview.py`, `calibrate_hsv.py`, `record_dataset.py`) and the full
+wired backend were additionally verified live against real webcam hardware
+during development — see the phase commit messages for specifics.
 
 ## Development Phases
 
-Phases 0–1 are complete (this delivery). Remaining phases, in order:
+All complete:
 
-2. Real perception — MediaPipe pose/hands + HSV red/blue box + experiment-area detection
-3. Hand-object interaction reasoning (approach/touch/hold/move/release/place)
-4. Rule-based temporal action recognizer + stability/hysteresis smoothing
-5. Full experiment state machine (SKIPPED_STEP vs OUT_OF_SEQUENCE distinguished)
-6. Decision engine refinement (all statuses, confidence-aware)
-7. Offline voice guidance (async, non-blocking)
-8. Persistent event logger + `experiment_report.json`
-9. Wire the real pipeline into the backend (replacing mocks); video recording
-10. Polished React + Vite mission-control dashboard
-11. Dataset recording tool
-12. Training/evaluation pipeline (baseline, then optional LSTM)
-13. Demo-mode polish, packaging, full docs
+0. Repo scaffold, config system, sample experiment as data.
+1. Threaded camera capture, FastAPI + WebSocket skeleton, scripted mocks
+   exercising the full pipeline shape end-to-end.
+2. Real perception — MediaPipe pose/hands + HSV red/blue box + experiment-
+   area detection.
+3. Hand-object interaction reasoning (approach/touch/hold/move/release/
+   place).
+4. Rule-based temporal action recognizer + stability/hysteresis smoothing.
+5/6. Full sequence validation (WRONG_OBJECT vs SKIPPED_STEP vs
+   OUT_OF_SEQUENCE distinguished) + COMPLETE_EXPERIMENT auto-advance.
+7. Offline voice guidance (async, non-blocking).
+8. Persistent event logger + `experiment_report.json`.
+9. Real perception + action recognition wired into the backend
+   (mocks kept as opt-in fallback); annotated video recording.
+10. React (Next.js) mission-control dashboard, live REST/WebSocket data.
+11. Dataset recording tool.
+12. Training/evaluation pipeline stubs (explicitly placeholder).
+13. Docs (this pass) + packaging.
 
 ## Known limitations / honesty notes
 
-- No real computer vision runs yet — object/action recognition is a
-  scripted mock. This is intentional (spec section 35: "mock inference
-  interfaces... before the real ML pipeline is complete") and is being
-  replaced incrementally, not skipped.
-- The sequence validator currently merges "skipped step" and "true
-  out-of-order" into a single `OUT_OF_SEQUENCE` status; splitting them
-  precisely needs the full state machine (Phase 5).
-- No GPU/CUDA is used or claimed; MediaPipe (added Phase 2) runs on CPU.
-- No accuracy, latency, or FPS claims beyond the measured numbers stated
-  above under Verification.
-- Built and tested in a Linux cloud sandbox with no physical camera;
-  webcam-source testing on Windows with real hardware is the next
-  concrete step once a machine with a camera is available.
+- Real inference throughput varies with machine load — measured anywhere
+  from ~2 fps to ~21 fps on the same development hardware. Not a bug to
+  chase for the MVP; see `docs/architecture.md`.
+- `tools/record_dataset.py` captures single isolated frames, not temporal
+  windows, so `training/`'s displacement/velocity features carry no
+  signal on data recorded today — see `docs/dataset.md`.
+- `training/evaluate.py` genuinely reports `N/A — insufficient evaluation
+  data` — no dataset has been recorded in this repo, and no accuracy
+  number is fabricated to fill the gap.
+- HSV detector "confidence" and the rule-based action recognizer's
+  confidence are both documented heuristics, not calibrated probabilities
+  — never presented as more than that.
+- No GPU/CUDA is used or claimed; MediaPipe runs on CPU.
+- No performance claims beyond what's been explicitly measured and stated
+  in the relevant module or doc.
 
 ## Tech stack
 
-Python 3.11, FastAPI, Uvicorn, WebSockets, Pydantic, OpenCV, MediaPipe
-(installed, not yet used), pyttsx3 (installed, not yet used), NumPy,
-Pandas, pytest. React + Vite + TypeScript + Tailwind planned for the
-dashboard (Phase 10).
+Python 3.10+, FastAPI, Uvicorn, WebSockets, Pydantic, OpenCV, MediaPipe,
+pyttsx3, NumPy, Pandas, scikit-learn, pytest. Next.js (App Router) +
+TypeScript + Tailwind v4 for the dashboard.

@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  /* Dark mission-control palette — deliberately a single committed look
+     (not theme-switchable), so no light-mode variants are defined. */
+  --color-bg: #0a0e14;
+  --color-panel: #10161f;
+  --color-panel-raised: #141c27;
+  --color-border: #1f2b3a;
+  --color-text: #e6edf3;
+  --color-text-muted: #7d8fa3;
+  --color-text-faint: #4c5a6b;
+
+  --color-cyan: #22d3ee;
+  --color-blue: #3b82f6;
+  --color-green: #34d399;
+  --color-amber: #fbbf24;
+  --color-red: #f87171;
+}
+
+@theme inline {
+  --color-bg: var(--color-bg);
+  --color-panel: var(--color-panel);
+  --color-panel-raised: var(--color-panel-raised);
+  --color-border: var(--color-border);
+  --color-text: var(--color-text);
+  --color-text-muted: var(--color-text-muted);
+  --color-text-faint: var(--color-text-faint);
+  --color-cyan: var(--color-cyan);
+  --color-blue: var(--color-blue);
+  --color-green: var(--color-green);
+  --color-amber: var(--color-amber);
+  --color-red: var(--color-red);
+
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+}
+
+body {
+  background: var(--color-bg);
+}
+
+/* Thin, dark-panel-appropriate scrollbars for the event log / checklist. */
+.astra-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+.astra-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.astra-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}

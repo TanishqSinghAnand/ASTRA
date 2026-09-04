@@ -12,52 +12,57 @@ def predict(action, confidence=0.9):
 
 def test_correct_sequence(sample_experiment):
     engine = RuleBasedSequenceEngine(sample_experiment)
-    sequence = [
-        "PICK_RED_BOX",
-        "PLACE_RED_BOX",
-        "PICK_BLUE_BOX",
-        "PLACE_BLUE_BOX",
-        "COMPLETE_EXPERIMENT",
-    ]
+    # The recognizer (Phase 4) never emits COMPLETE_EXPERIMENT — there's no
+    # physical gesture for it — so only the 4 real PICK/PLACE actions are
+    # submitted; the engine auto-advances through the trailing COMPLETE step.
+    sequence = ["PICK_RED_BOX", "PLACE_RED_BOX", "PICK_BLUE_BOX", "PLACE_BLUE_BOX"]
     statuses = []
     for action in sequence:
         event = engine.submit_action(predict(action))
         assert event is not None
         statuses.append(event.status)
-    assert statuses[:-1] == [SequenceStatus.CORRECT] * 4
+    assert statuses[:-1] == [SequenceStatus.CORRECT] * 3
     assert statuses[-1] == SequenceStatus.COMPLETE
     assert engine.is_finished()
 
 
-def test_wrong_action(sample_experiment):
+def test_wrong_object(sample_experiment):
+    # Same action TYPE (PICK) as expected, different object, that object's
+    # own step is still ahead — grabbed the wrong item for this step.
     engine = RuleBasedSequenceEngine(sample_experiment)
-    engine.submit_action(predict("PICK_RED_BOX"))  # step 1, correct
-    # Step 2 expects PLACE_RED_BOX; deliberately do something else instead.
-    event = engine.submit_action(predict("PICK_BLUE_BOX"))
-    assert event.status == SequenceStatus.OUT_OF_SEQUENCE
-    assert event.expected == "PLACE_RED_BOX"
+    event = engine.submit_action(predict("PICK_BLUE_BOX"))  # step 1 expects PICK_RED_BOX
+    assert event.status == SequenceStatus.WRONG_OBJECT
+    assert event.expected == "PICK_RED_BOX"
     assert event.detected == "PICK_BLUE_BOX"
-    assert engine.current_step() == 2  # did not advance
+    assert engine.current_step() == 1  # did not advance
 
 
 def test_skipped_step(sample_experiment):
-    # 1 -> 3 (step 2 never happened). The MVP validator classifies any
-    # detected action that doesn't match the current expected step and
-    # hasn't already been completed as OUT_OF_SEQUENCE; a dedicated
-    # SKIPPED_STEP classification (distinguishing "never happened" from
-    # "happened later") is added with the full state machine in Phase 5/6.
+    # 1 -> 3 (step 2, PLACE_RED_BOX, never happened): a different action
+    # TYPE (PICK) than what's expected (PLACE), matching a real but later
+    # step — the current step was skipped over, not substituted.
     engine = RuleBasedSequenceEngine(sample_experiment)
     engine.submit_action(predict("PICK_RED_BOX"))  # step 1, correct
     event = engine.submit_action(predict("PICK_BLUE_BOX"))  # skips step 2 (PLACE_RED_BOX)
-    assert event.status == SequenceStatus.OUT_OF_SEQUENCE
+    assert event.status == SequenceStatus.SKIPPED_STEP
     assert engine.current_step() == 2
+
+
+def test_out_of_sequence_unknown_action(sample_experiment):
+    # True fallback: detected_key doesn't correspond to any known step at
+    # all. Shouldn't normally happen (the recognizer only emits known
+    # action_keys) — kept as a defensive case.
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    event = engine.submit_action(predict("JUMP_ROPE"))
+    assert event.status == SequenceStatus.OUT_OF_SEQUENCE
+    assert engine.current_step() == 1
 
 
 def test_recovery(sample_experiment):
     engine = RuleBasedSequenceEngine(sample_experiment)
     engine.submit_action(predict("PICK_RED_BOX"))
     error_event = engine.submit_action(predict("PICK_BLUE_BOX"))
-    assert error_event.status == SequenceStatus.OUT_OF_SEQUENCE
+    assert error_event.status == SequenceStatus.SKIPPED_STEP
 
     recovery_event = engine.submit_action(predict("PLACE_RED_BOX"))
     assert recovery_event.status == SequenceStatus.RECOVERED
@@ -79,14 +84,33 @@ def test_repeated_step(sample_experiment):
 
 def test_experiment_completion(sample_experiment):
     engine = RuleBasedSequenceEngine(sample_experiment)
-    for action in ["PICK_RED_BOX", "PLACE_RED_BOX", "PICK_BLUE_BOX", "PLACE_BLUE_BOX"]:
+    for action in ["PICK_RED_BOX", "PLACE_RED_BOX", "PICK_BLUE_BOX"]:
         engine.submit_action(predict(action))
     assert not engine.is_finished()
-    final_event = engine.submit_action(predict("COMPLETE_EXPERIMENT"))
+    # PLACE_BLUE_BOX is the last real gesture — the engine auto-advances
+    # through COMPLETE_EXPERIMENT itself and returns *that* event.
+    final_event = engine.submit_action(predict("PLACE_BLUE_BOX"))
     assert final_event.status == SequenceStatus.COMPLETE
     assert engine.is_finished()
     # Nothing further is processed once finished.
     assert engine.submit_action(predict("PICK_RED_BOX")) is None
+
+
+def test_complete_auto_advance_logs_both_events(sample_experiment):
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    for action in ["PICK_RED_BOX", "PLACE_RED_BOX", "PICK_BLUE_BOX"]:
+        engine.submit_action(predict(action))
+    returned_event = engine.submit_action(predict("PLACE_BLUE_BOX"))
+
+    # submit_action can only return one event, but both the real step's
+    # CORRECT outcome and the auto-generated COMPLETE event must still be
+    # in history for logging/reporting (Phase 8).
+    assert returned_event.status == SequenceStatus.COMPLETE
+    assert len(engine.history) == 5
+    assert engine.history[-2].status == SequenceStatus.CORRECT
+    assert engine.history[-2].detected == "PLACE_BLUE_BOX"
+    assert engine.history[-1].status == SequenceStatus.COMPLETE
+    assert engine.history[-1].detected == "COMPLETE_EXPERIMENT"
 
 
 def test_low_confidence_does_not_advance(sample_experiment):

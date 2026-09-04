@@ -56,6 +56,10 @@ class FeatureFlags(BaseModel):
     enable_recording: bool = True
     enable_streaming: bool = False
     demo_mode: bool = True
+    # Opt-in fallback to the scripted Phase 0/1 mocks instead of the real
+    # Phase 2/4 perception+action pipeline — for headless/CI verification
+    # where no real person is in frame to produce anything meaningful.
+    use_mock_engines: bool = False
 
 
 class PathSettings(BaseModel):
@@ -98,6 +102,7 @@ _ENV_OVERRIDES = {
     "ENABLE_RECORDING": ("features", "enable_recording", lambda v: v.lower() == "true"),
     "ENABLE_STREAMING": ("features", "enable_streaming", lambda v: v.lower() == "true"),
     "DEMO_MODE": ("features", "demo_mode", lambda v: v.lower() == "true"),
+    "USE_MOCK_ENGINES": ("features", "use_mock_engines", lambda v: v.lower() == "true"),
     "MODEL_DEVICE": ("model_device", None, str),
 }
 

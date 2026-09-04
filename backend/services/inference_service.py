@@ -1,8 +1,9 @@
 """Orchestrates one tick of CAMERA -> PERCEPTION -> ACTION -> SEQUENCE and
 fans the results out to every connected WebSocket client. This is the one
-place that wires the (currently mock) engines together — Phase 2-6 swap the
-concrete PerceptionEngine/ActionRecognizer implementations assigned in
-__init__ without changing anything below.
+place that wires the engines together: real Phase 2/4 perception+action by
+default, with the scripted Phase 0/1 mocks available as an opt-in fallback
+(features.use_mock_engines) for headless/CI verification where no real
+person is in frame to produce anything meaningful.
 """
 from __future__ import annotations
 
@@ -17,10 +18,14 @@ from backend.experiment.validator import RuleBasedSequenceEngine
 from backend.mocks.mock_engines import MockActionRecognizer, MockPerceptionEngine
 from backend.perception.base import ActionPrediction, PerceptionFrame, SequenceEvent
 from backend.perception.interfaces import ActionRecognizer, PerceptionEngine, SequenceEngine
+from backend.perception.real_engine import RealPerceptionEngine
 from backend.services.camera_service import CameraError, CameraService
 from backend.services.frame_utils import encode_frame_jpeg_b64
 from backend.services.logging_service import LoggingService
+from backend.services.overlay import draw_perception_overlay
+from backend.services.recording_service import RecordingService
 from backend.services.voice_service import VoiceService
+from backend.temporal.action_recognizer import RuleBasedActionRecognizer
 
 logger = logging.getLogger("astra.inference")
 
@@ -35,13 +40,22 @@ class InferenceService:
         self.repo_root = repo_root
 
         self.camera = CameraService(settings.camera, repo_root)
-        self.perception: PerceptionEngine = MockPerceptionEngine()
-        self.action_recognizer: ActionRecognizer = MockActionRecognizer()
+        if settings.features.use_mock_engines:
+            self.perception: PerceptionEngine = MockPerceptionEngine()
+            self.action_recognizer: ActionRecognizer = MockActionRecognizer()
+        else:
+            self.perception = RealPerceptionEngine(settings.perception)
+            self.action_recognizer = RuleBasedActionRecognizer(settings.perception, settings.temporal)
         self.sequence_engine: SequenceEngine = RuleBasedSequenceEngine(
             experiment, settings.perception.confidence_threshold
         )
         self.voice = VoiceService(experiment, enabled=settings.features.enable_voice)
         self.logging_service = LoggingService(experiment, settings.resolve_path(settings.paths.reports_dir))
+        self.recording = RecordingService(
+            settings.resolve_path(settings.paths.recordings_dir),
+            enabled=settings.features.enable_recording,
+            nominal_fps=settings.camera.target_fps,
+        )
 
         self.status: str = "IDLE"  # IDLE | RUNNING | FINISHED | STOPPED | ERROR
         self.error_message: str | None = None
@@ -96,6 +110,7 @@ class InferenceService:
         self.started_at = time.time()
         self.voice.start()
         self.logging_service.start_run()
+        self.recording.start_run()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Inference loop started")
 
@@ -105,6 +120,7 @@ class InferenceService:
             self._task = None
         self.camera.stop()
         self.voice.stop()
+        self.recording.finalize_run()
         # No-op if the loop already finalized this run on completion — see
         # LoggingService.finalize_run's idempotency guard.
         self.logging_service.finalize_run(finished=self.sequence_engine.is_finished())
@@ -184,9 +200,15 @@ class InferenceService:
                             self.status = "FINISHED"
                             self.logging_service.finalize_run(finished=True)
 
+                    # Annotated once per processed frame (recording wants
+                    # every frame; the WS push below is throttled, but reuses
+                    # this same annotated image rather than re-drawing it).
+                    annotated = draw_perception_overlay(captured.frame, pframe)
+                    self.recording.write_frame(annotated)
+
                     if loop_start - last_frame_push >= FRAME_PUSH_INTERVAL_S:
                         last_frame_push = loop_start
-                        image_b64 = encode_frame_jpeg_b64(captured.frame)
+                        image_b64 = encode_frame_jpeg_b64(annotated)
                         await self._broadcast(
                             {"type": "frame", "image": image_b64, "frame_index": captured.frame_index}
                         )

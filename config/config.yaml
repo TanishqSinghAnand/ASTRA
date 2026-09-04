@@ -59,6 +59,7 @@ features:
   enable_recording: true
   enable_streaming: false         # optional IP/MJPEG stream, off by default
   demo_mode: true                 # true while camera.source != "webcam"
+  use_mock_engines: false         # true -> scripted Phase 0/1 mocks instead of real perception/action (headless/CI)
 
 # --- Inference device ---
 # auto -> use CUDA if a compatible model/runtime reports it available, else CPU.

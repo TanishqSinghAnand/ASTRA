@@ -29,17 +29,11 @@ import threading
 from typing import Callable, Optional
 
 from backend.experiment.experiment_loader import ExperimentDefinition
-from backend.perception.base import SequenceEvent, SequenceStatus
+from backend.perception.base import ERROR_STATUSES, SequenceEvent, SequenceStatus
 
 logger = logging.getLogger("astra.voice")
 
 _SUCCESS_STATUSES = (SequenceStatus.CORRECT, SequenceStatus.RECOVERED, SequenceStatus.COMPLETE)
-_ERROR_STATUSES = (
-    SequenceStatus.WRONG_OBJECT,
-    SequenceStatus.SKIPPED_STEP,
-    SequenceStatus.OUT_OF_SEQUENCE,
-    SequenceStatus.REPEATED_STEP,
-)
 
 _ERROR_PREFIXES = {
     SequenceStatus.WRONG_OBJECT: "That's the wrong object.",
@@ -61,7 +55,7 @@ def _message_for_event(experiment: ExperimentDefinition, event: SequenceEvent) -
     if event.status in _SUCCESS_STATUSES:
         step = experiment.step_by_id(event.step)
         return step.voice_next if step and step.voice_next else None
-    if event.status in _ERROR_STATUSES:
+    if event.status in ERROR_STATUSES:
         return _speakable_error(experiment, event)
     return None  # LOW_CONFIDENCE -> still "observing", stay silent
 

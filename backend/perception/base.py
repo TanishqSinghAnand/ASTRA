@@ -101,6 +101,20 @@ class SequenceStatus(str, Enum):
     COMPLETE = "COMPLETE"
 
 
+# Statuses that represent an actual procedural deviation (as opposed to a
+# clean match, a non-conclusive observation, or the auto-completion event).
+# Shared by voice_service.py (which errors get spoken) and
+# logging_service.py (which count toward a run's total_deviations).
+ERROR_STATUSES = frozenset(
+    {
+        SequenceStatus.WRONG_OBJECT,
+        SequenceStatus.SKIPPED_STEP,
+        SequenceStatus.OUT_OF_SEQUENCE,
+        SequenceStatus.REPEATED_STEP,
+    }
+)
+
+
 class SequenceEvent(BaseModel):
     """Output of sequence validation for one recognized action. Matches the
     WebSocket 'sequence_event' shape in spec section 33 and the log schema

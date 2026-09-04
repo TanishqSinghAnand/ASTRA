@@ -19,6 +19,7 @@ from backend.perception.base import ActionPrediction, PerceptionFrame, SequenceE
 from backend.perception.interfaces import ActionRecognizer, PerceptionEngine, SequenceEngine
 from backend.services.camera_service import CameraError, CameraService
 from backend.services.frame_utils import encode_frame_jpeg_b64
+from backend.services.logging_service import LoggingService
 from backend.services.voice_service import VoiceService
 
 logger = logging.getLogger("astra.inference")
@@ -40,6 +41,7 @@ class InferenceService:
             experiment, settings.perception.confidence_threshold
         )
         self.voice = VoiceService(experiment, enabled=settings.features.enable_voice)
+        self.logging_service = LoggingService(experiment, settings.resolve_path(settings.paths.reports_dir))
 
         self.status: str = "IDLE"  # IDLE | RUNNING | FINISHED | STOPPED | ERROR
         self.error_message: str | None = None
@@ -93,6 +95,7 @@ class InferenceService:
         self.status = "RUNNING"
         self.started_at = time.time()
         self.voice.start()
+        self.logging_service.start_run()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Inference loop started")
 
@@ -102,6 +105,9 @@ class InferenceService:
             self._task = None
         self.camera.stop()
         self.voice.stop()
+        # No-op if the loop already finalized this run on completion — see
+        # LoggingService.finalize_run's idempotency guard.
+        self.logging_service.finalize_run(finished=self.sequence_engine.is_finished())
         if self.status == "RUNNING":
             self.status = "STOPPED"
         logger.info("Inference loop stopped")
@@ -158,13 +164,25 @@ class InferenceService:
                         }
                     )
 
-                    event = self.sequence_engine.submit_action(prediction)
-                    if event is not None:
-                        self.event_log.append(event)
-                        self.voice.on_sequence_event(event)
-                        await self._broadcast({"type": "sequence_event", **event.model_dump()})
+                    # submit_action returns only its single "headline" event,
+                    # but the auto-COMPLETE advance (validator.py) can append
+                    # *two* events to history in one call — the real step's
+                    # own CORRECT/RECOVERED plus the auto-generated COMPLETE.
+                    # Diff history (concrete RuleBasedSequenceEngine state,
+                    # not part of the abstract SequenceEngine interface) so
+                    # every event actually gets logged/voiced/broadcast, not
+                    # just the last one.
+                    history_len_before = len(self.sequence_engine.history)
+                    returned_event = self.sequence_engine.submit_action(prediction)
+                    if returned_event is not None:
+                        for event in self.sequence_engine.history[history_len_before:]:
+                            self.event_log.append(event)
+                            self.voice.on_sequence_event(event)
+                            self.logging_service.log_event(event)
+                            await self._broadcast({"type": "sequence_event", **event.model_dump()})
                         if self.sequence_engine.is_finished():
                             self.status = "FINISHED"
+                            self.logging_service.finalize_run(finished=True)
 
                     if loop_start - last_frame_push >= FRAME_PUSH_INTERVAL_S:
                         last_frame_push = loop_start

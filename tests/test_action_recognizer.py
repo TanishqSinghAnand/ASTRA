@@ -32,10 +32,14 @@ class FakeClock:
 
 def _settings(colors: dict | None = None) -> PerceptionSettings:
     return PerceptionSettings(
+        detector_backend="hsv",
         hand_object_distance_px=80,
         hand_object_touch_distance_px=40,
         colors=colors
         or {"red_box": ColorSpec(ranges=[HSVRange(lower=(0, 0, 0), upper=(1, 1, 1))])},
+        # Values unused (DetectedObjects built directly with absolute pixel
+        # bboxes) — only the key needs to exist for the zone lookup.
+        target_zones={"experiment_area": (0.0, 0.0, 0.0, 0.0)},
     )
 
 
@@ -142,6 +146,21 @@ def test_place_emitted_after_release_into_area():
         place_predictions.append(recognizer.update(_frame(i, INSIDE_AREA, (50.0, 50.0))))
     actions = [p.action for p in place_predictions if p.action is not None]
     assert actions == ["PLACE_RED_BOX"]
+
+
+def test_place_action_carries_the_zone_it_landed_in():
+    recognizer, clock = _recognizer(stability_frames=3, min_confidence_duration_ms=100)
+    _run_hold_sequence(recognizer, clock, OUTSIDE_AREA, frames=4)
+
+    place_event = None
+    for i in range(20, 26):
+        clock.tick()
+        pred = recognizer.update(_frame(i, INSIDE_AREA, (50.0, 50.0)))
+        if pred.action == "PLACE_RED_BOX":
+            place_event = pred
+            break
+    assert place_event is not None
+    assert place_event.location == "experiment_area"
 
 
 def test_release_outside_area_emits_no_place():

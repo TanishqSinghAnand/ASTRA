@@ -11,17 +11,20 @@ once one exists).
 
 Action mapping (only PICK/PLACE — this experiment has no other gesture):
   - While an object is held (OBJECT_BEING_HELD or OBJECT_MOVING_WITH_HAND)
-    AND it was picked up from outside the experiment area, the candidate is
-    "PICK_<CLASS>" (e.g. PICK_RED_BOX) for as long as the hold lasts. The
-    "outside the area" check is latched at the moment the hold begins (not
-    re-checked every frame) so carrying the box across the area's edge
-    mid-motion can't flip the candidate. This mirrors the class naming
-    color_detector.py already uses ("red_box") upper-cased to match
-    ExperimentStep.action_key's convention ("RED_BOX") — no explicit
-    per-object mapping table needed.
+    AND it was picked up from outside every configured target zone, the
+    candidate is "PICK_<CLASS>" (e.g. PICK_CELL_PHONE) for as long as the
+    hold lasts. The "outside every zone" check is latched at the moment
+    the hold begins (not re-checked every frame) so carrying the object
+    across a zone's edge mid-motion can't flip the candidate. This mirrors
+    the class naming color_detector.py/object_detector.py already use
+    ("cell_phone") upper-cased to match ExperimentStep.action_key's
+    convention ("CELL_PHONE") — no explicit per-object mapping table
+    needed.
   - While an object sits OBJECT_PLACED (persists until re-touched, per
-    interaction.py), the candidate is "PLACE_<CLASS>".
-  - OBJECT_RELEASED (dropped outside the area) maps to no action — this
+    interaction.py), the candidate is "PLACE_<CLASS>", and (v2.0) the
+    emitted ActionPrediction.location names which configured zone it
+    landed in — see zones.py and validator.py's WRONG_LOCATION handling.
+  - OBJECT_RELEASED (dropped outside every zone) maps to no action — this
     sample experiment has no "drop"/failure gesture, only PICK/PLACE.
 
 COMPLETE_EXPERIMENT (design decision, per spec): there is no physical
@@ -48,7 +51,7 @@ from typing import Callable, Optional
 
 from backend.config.settings import PerceptionSettings, TemporalSettings
 from backend.perception.base import ActionPrediction, InteractionState, PerceptionFrame
-from backend.perception.interaction import InteractionReasoner, bbox_center, point_in_bbox
+from backend.perception.interaction import InteractionReasoner, tracked_classes_for, bbox_center, point_in_bbox
 from backend.perception.interfaces import ActionRecognizer
 from backend.temporal.temporal_smoother import TemporalSmoother
 
@@ -73,7 +76,8 @@ class RuleBasedActionRecognizer(ActionRecognizer):
             min_confidence_duration_ms=temporal_settings.min_confidence_duration_ms,
             **({"clock": clock} if clock is not None else {}),
         )
-        self._tracked_classes = list(perception_settings.colors.keys())
+        self.perception_settings = perception_settings
+        self._tracked_classes = tracked_classes_for(perception_settings)
         self._confidence_windows: dict[str, deque[float]] = {
             cls: deque(maxlen=_CONFIDENCE_WINDOW_LEN) for cls in self._tracked_classes
         }
@@ -92,10 +96,11 @@ class RuleBasedActionRecognizer(ActionRecognizer):
     def update(self, perception_frame: PerceptionFrame) -> ActionPrediction:
         events = self.reasoner.update(perception_frame)
         objects_by_class = {obj.cls: obj for obj in perception_frame.objects}
-        experiment_area = objects_by_class.get("experiment_area")
+        zones = [objects_by_class[name] for name in self.perception_settings.target_zones if name in objects_by_class]
 
         candidate_key: Optional[str] = None
         candidate_conf = 0.0
+        candidate_location: Optional[str] = None
 
         for cls, event in events.items():
             obj = objects_by_class.get(cls)
@@ -103,7 +108,7 @@ class RuleBasedActionRecognizer(ActionRecognizer):
                 self._confidence_windows[cls].append(obj.confidence)
 
             if event.changed and event.state in _HELD_STATES:
-                self._pick_valid[cls] = self._picked_from_outside_area(obj, experiment_area)
+                self._pick_valid[cls] = self._picked_from_outside_zones(obj, zones)
 
             action_key: Optional[str] = None
             if event.state in _HELD_STATES and self._pick_valid.get(cls, True):
@@ -114,16 +119,18 @@ class RuleBasedActionRecognizer(ActionRecognizer):
             if action_key is not None and candidate_key is None:
                 candidate_key = action_key
                 candidate_conf = self._combined_confidence(cls)
+                candidate_location = event.zone
 
-        return self.smoother.update(candidate_key, candidate_conf)
+        return self.smoother.update(candidate_key, candidate_conf, location=candidate_location)
 
     # -- internals -----------------------------------------------------------
 
     @staticmethod
-    def _picked_from_outside_area(obj, experiment_area) -> bool:
-        if obj is None or experiment_area is None:
+    def _picked_from_outside_zones(obj, zones: list) -> bool:
+        if obj is None or not zones:
             return True
-        return not point_in_bbox(bbox_center(obj.bbox), experiment_area.bbox)
+        center = bbox_center(obj.bbox)
+        return not any(point_in_bbox(center, zone.bbox) for zone in zones)
 
     def _combined_confidence(self, cls: str) -> float:
         window = self._confidence_windows.get(cls)

@@ -22,6 +22,12 @@ Mismatch classification (a detected action that isn't the expected one):
   - OUT_OF_SEQUENCE: true fallback — detected_key doesn't match any known
     step's action_key at all. Shouldn't normally happen (the recognizer
     only emits known action_keys), kept defensively.
+  - WRONG_LOCATION (v2.0): the right object, right action — but a PLACE
+    step whose ExperimentStep.target names a specific zone, and the
+    object landed in a *different* configured zone
+    (ActionPrediction.location, from action_recognizer.py's zone
+    tracking). Doesn't advance the step; a subsequent placement in the
+    correct zone is a normal RECOVERED, same as any other error status.
 
 COMPLETE_EXPERIMENT: per backend/temporal/action_recognizer.py's documented
 design decision, the recognizer never emits this — there's no physical
@@ -97,9 +103,38 @@ class RuleBasedSequenceEngine(SequenceEngine):
             return event
 
         if detected_key == expected_key:
+            if self._is_wrong_location(expected_step, prediction):
+                return self._handle_wrong_location(expected_step, prediction)
             return self._handle_correct(expected_step, prediction)
 
         return self._handle_mismatch(expected_step, prediction)
+
+    @staticmethod
+    def _is_wrong_location(step: ExperimentStep, prediction: ActionPrediction) -> bool:
+        if step.action != "PLACE" or not step.target or prediction.location is None:
+            return False
+        return prediction.location.strip().lower() != step.target.strip().lower()
+
+    def _handle_wrong_location(self, expected_step: ExperimentStep, prediction: ActionPrediction) -> SequenceEvent:
+        self._last_was_error = True
+        event = SequenceEvent(
+            step=expected_step.id,
+            expected=expected_step.action_key,
+            detected=prediction.action,
+            confidence=prediction.confidence,
+            status=SequenceStatus.WRONG_LOCATION,
+            error_type=SequenceStatus.WRONG_LOCATION.value,
+            recovered=False,
+            explanation=[
+                f"Object/action: {expected_step.action_key} — correct.",
+                f"Required location: {expected_step.target}",
+                f"Actual location: {prediction.location}",
+                f"Current required step: {expected_step.id} — {expected_step.instruction}",
+                "Right item, wrong spot — move it to the required location.",
+            ],
+        )
+        self.history.append(event)
+        return event
 
     # -- correct / auto-complete --------------------------------------------
 

@@ -40,6 +40,7 @@ _ERROR_PREFIXES = {
     SequenceStatus.SKIPPED_STEP: "You skipped a step.",
     SequenceStatus.REPEATED_STEP: "That step is already done.",
     SequenceStatus.OUT_OF_SEQUENCE: "That wasn't recognized.",
+    SequenceStatus.WRONG_LOCATION: "Right item, wrong spot.",
 }
 
 

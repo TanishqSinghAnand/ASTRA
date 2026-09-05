@@ -16,6 +16,15 @@ PyYAML==6.0.2
 opencv-python==4.10.0.84
 mediapipe==0.10.14
 
+# --- General object detection (v2.0): pretrained YOLOv8, recognizes common
+# real-world objects (phone, cup, bottle, book, ...) out of the box, no
+# training/dataset needed. Pulls in torch — a real dependency-weight jump
+# from the rest of this list — and needs a one-time network download of
+# pretrained weights on first use (cached locally after that; see
+# docs/architecture.md's gotchas section for the same pattern with
+# MediaPipe's model_complexity).
+ultralytics==8.4.140
+
 # --- Voice (used from Phase 7 onward) ---
 pyttsx3==2.98
 

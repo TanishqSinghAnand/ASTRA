@@ -88,6 +88,13 @@ class ActionPrediction(BaseModel):
     confidence: float = 0.0
     timestamp: float = Field(default_factory=time.time)
     source: str = "mock"  # "mock" | "rule_based" | "lstm" — for transparency in UI/logs
+    # v2.0: which configured target zone (settings.target_zones key) a
+    # PLACE action landed in, if any — None for PICK actions, or a PLACE
+    # where zone geometry wasn't available. This is still perception-
+    # adjacent geometric fact ("it's sitting in zone_b"), not experiment
+    # knowledge — the sequence layer (validator.py) is what decides
+    # whether that's the *right* zone for the current step.
+    location: Optional[str] = None
 
 
 class SequenceStatus(str, Enum):
@@ -96,6 +103,7 @@ class SequenceStatus(str, Enum):
     SKIPPED_STEP = "SKIPPED_STEP"
     OUT_OF_SEQUENCE = "OUT_OF_SEQUENCE"
     REPEATED_STEP = "REPEATED_STEP"
+    WRONG_LOCATION = "WRONG_LOCATION"  # v2.0: right object/action, wrong target zone
     LOW_CONFIDENCE = "LOW_CONFIDENCE"
     RECOVERED = "RECOVERED"
     COMPLETE = "COMPLETE"
@@ -111,6 +119,7 @@ ERROR_STATUSES = frozenset(
         SequenceStatus.SKIPPED_STEP,
         SequenceStatus.OUT_OF_SEQUENCE,
         SequenceStatus.REPEATED_STEP,
+        SequenceStatus.WRONG_LOCATION,
     }
 )
 

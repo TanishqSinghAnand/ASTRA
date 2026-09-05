@@ -6,8 +6,8 @@ from backend.experiment.validator import RuleBasedSequenceEngine
 from backend.perception.base import ActionPrediction, SequenceStatus
 
 
-def predict(action, confidence=0.9):
-    return ActionPrediction(action=action, confidence=confidence)
+def predict(action, confidence=0.9, location=None):
+    return ActionPrediction(action=action, confidence=confidence, location=location)
 
 
 def test_correct_sequence(sample_experiment):
@@ -72,6 +72,41 @@ def test_recovery(sample_experiment):
     # The step *after* a recovery is a normal correct step again, not another recovery.
     next_event = engine.submit_action(predict("PICK_BLUE_BOX"))
     assert next_event.status == SequenceStatus.CORRECT
+
+
+def test_place_with_matching_location_is_correct(sample_experiment):
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    engine.submit_action(predict("PICK_RED_BOX"))
+    # bas_sample_001.json's step 2 target is "EXPERIMENT_AREA" — matching
+    # location (case-insensitive) should not trigger WRONG_LOCATION.
+    event = engine.submit_action(predict("PLACE_RED_BOX", location="EXPERIMENT_AREA"))
+    assert event.status == SequenceStatus.CORRECT
+
+
+def test_place_in_wrong_zone_is_wrong_location(sample_experiment):
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    engine.submit_action(predict("PICK_RED_BOX"))
+    event = engine.submit_action(predict("PLACE_RED_BOX", location="zone_b"))
+    assert event.status == SequenceStatus.WRONG_LOCATION
+    assert engine.current_step() == 2  # did not advance
+
+
+def test_wrong_location_then_correct_zone_is_recovered(sample_experiment):
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    engine.submit_action(predict("PICK_RED_BOX"))
+    engine.submit_action(predict("PLACE_RED_BOX", location="zone_b"))
+    recovery = engine.submit_action(predict("PLACE_RED_BOX", location="EXPERIMENT_AREA"))
+    assert recovery.status == SequenceStatus.RECOVERED
+    assert engine.current_step() == 3
+
+
+def test_place_with_no_location_info_is_not_penalized(sample_experiment):
+    # A recognizer that doesn't compute zone info (location=None) must not
+    # be treated as a location mismatch — benefit of the doubt.
+    engine = RuleBasedSequenceEngine(sample_experiment)
+    engine.submit_action(predict("PICK_RED_BOX"))
+    event = engine.submit_action(predict("PLACE_RED_BOX", location=None))
+    assert event.status == SequenceStatus.CORRECT
 
 
 def test_repeated_step(sample_experiment):

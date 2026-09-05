@@ -6,6 +6,12 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# v2.0: pretrained YOLO weights — download once on first use (ultralytics
+# caches its own copy too), never committed as a repo binary.
+*.pt
+yolo11*.pt
+runs/
+
 # Node / frontend
 frontend/node_modules/
 frontend/.next/

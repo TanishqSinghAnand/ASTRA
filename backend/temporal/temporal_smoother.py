@@ -33,6 +33,7 @@ class TemporalSmoother:
         self._clock = clock
         self._candidate: Optional[str] = None
         self._candidate_confidences: list[float] = []
+        self._candidate_location: Optional[str] = None
         self._candidate_since: Optional[float] = None
         self._candidate_frames = 0
         self._last_emitted: Optional[str] = None
@@ -40,16 +41,23 @@ class TemporalSmoother:
     def reset(self) -> None:
         self._candidate = None
         self._candidate_confidences = []
+        self._candidate_location = None
         self._candidate_since = None
         self._candidate_frames = 0
         self._last_emitted = None
 
-    def update(self, candidate_key: Optional[str], candidate_confidence: float) -> ActionPrediction:
+    def update(
+        self,
+        candidate_key: Optional[str],
+        candidate_confidence: float,
+        location: Optional[str] = None,
+    ) -> ActionPrediction:
         now = self._clock()
 
         if candidate_key != self._candidate:
             self._candidate = candidate_key
             self._candidate_confidences = [candidate_confidence] if candidate_key else []
+            self._candidate_location = location
             self._candidate_since = now if candidate_key else None
             self._candidate_frames = 1 if candidate_key else 0
             if candidate_key is None:
@@ -60,6 +68,12 @@ class TemporalSmoother:
         elif candidate_key is not None:
             self._candidate_confidences.append(candidate_confidence)
             self._candidate_frames += 1
+            # v2.0: which target zone (if any) — stable for the life of a
+            # PLACE candidate (interaction.py's OBJECT_PLACED persists in
+            # one zone until re-touched), so the latest non-None value is
+            # as good as any; no averaging needed for a discrete label.
+            if location is not None:
+                self._candidate_location = location
 
         if candidate_key is None:
             return ActionPrediction(action=None, confidence=0.0, source="rule_based")
@@ -72,6 +86,11 @@ class TemporalSmoother:
         if stable and candidate_key != self._last_emitted:
             self._last_emitted = candidate_key
             avg_confidence = sum(self._candidate_confidences) / len(self._candidate_confidences)
-            return ActionPrediction(action=candidate_key, confidence=round(avg_confidence, 3), source="rule_based")
+            return ActionPrediction(
+                action=candidate_key,
+                confidence=round(avg_confidence, 3),
+                source="rule_based",
+                location=self._candidate_location,
+            )
 
         return ActionPrediction(action=None, confidence=0.0, source="rule_based")

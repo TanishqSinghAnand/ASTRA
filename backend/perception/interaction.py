@@ -1,16 +1,19 @@
-"""Hand-object interaction reasoning (Phase 3).
+"""Hand-object interaction reasoning (Phase 3; multi-zone placement v2.0).
 
 Still perception, not experiment logic: this module only answers "is a hand
-approaching/touching/holding/placing an object?" for each tracked box. It
-knows nothing about PICK/PLACE experiment steps or the sequence — Phase 4
-(backend/temporal/) is what turns an InteractionState transition into an
-action_key like "PICK_RED_BOX".
+approaching/touching/holding/placing an object?" for each tracked box, and
+(v2.0) "which configured zone did it land in?" — not whether that's the
+*right* zone for the current step, which is the sequence layer's job
+(backend/experiment/validator.py). It knows nothing about PICK/PLACE
+experiment steps or the sequence — Phase 4 (backend/temporal/) is what
+turns an InteractionState transition into an action_key like
+"PICK_RED_BOX".
 
 Units: MediaPipe hand landmarks are normalized (0-1 of frame size);
-DetectedObject bboxes from color_detector.py are already pixel-space. Both
-are needed in the same units to compare, which is why this reads
-PerceptionFrame.frame_width/frame_height (see base.py) rather than assuming
-a fixed resolution.
+DetectedObject bboxes from color_detector.py/object_detector.py are
+already pixel-space. Both are needed in the same units to compare, which
+is why this reads PerceptionFrame.frame_width/frame_height (see base.py)
+rather than assuming a fixed resolution.
 
 Hand position is approximated as the average of wrist + index_mcp +
 pinky_mcp (hands.py's own "palm-center" landmark set) — fingertips are too
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Optional
 
 from backend.config.settings import PerceptionSettings
 from backend.perception.base import BBox, DetectedObject, HandFrame, InteractionState, PerceptionFrame
@@ -64,6 +68,11 @@ class InteractionEvent:
     object_class: str
     state: InteractionState
     changed: bool  # True only on the frame the state actually transitioned
+    # v2.0: which settings.target_zones key the object is sitting in, set
+    # whenever state is OBJECT_PLACED (and persists while it stays resting
+    # there — see _update_track's "currently_resting" branch). None
+    # otherwise, or if it's outside every configured zone.
+    zone: Optional[str] = None
 
 
 @dataclass
@@ -71,20 +80,37 @@ class _ObjectTrack:
     state: InteractionState = InteractionState.NONE
     hand_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
     box_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
+    zone: Optional[str] = None
+
+
+def tracked_classes_for(settings: PerceptionSettings) -> list[str]:
+    if settings.detector_backend == "yolo":
+        from backend.perception.object_detector import normalize_class_name
+
+        return [normalize_class_name(c) for c in settings.yolo_classes]
+    return list(settings.colors.keys())
+
+
+def _zone_containing(point: tuple[float, float], zones: list[DetectedObject]) -> Optional[str]:
+    for zone in zones:
+        if point_in_bbox(point, zone.bbox):
+            return zone.cls
+    return None
 
 
 class InteractionReasoner:
-    """Maintains per-object InteractionState across frames.
+    """Maintains per-object InteractionState (and, v2.0, current zone)
+    across frames.
 
-    Tracked object classes are read from settings.colors (i.e. whatever
-    color_detector.py is configured to detect — "red_box"/"blue_box" for the
-    sample experiment) rather than hardcoded, so a different experiment's
-    object set doesn't require touching this code.
+    Tracked object classes come from whichever detector backend is
+    configured (settings.colors for HSV, settings.yolo_classes for YOLO)
+    rather than hardcoded, so a different experiment's object set doesn't
+    require touching this code.
     """
 
     def __init__(self, settings: PerceptionSettings):
         self.settings = settings
-        self._tracked_classes = list(settings.colors.keys())
+        self._tracked_classes = tracked_classes_for(settings)
         self._tracks: dict[str, _ObjectTrack] = {cls: _ObjectTrack() for cls in self._tracked_classes}
 
     def reset(self) -> None:
@@ -95,12 +121,12 @@ class InteractionReasoner:
             # No known pixel space this frame (e.g. a producer that doesn't
             # populate frame_width/height) — nothing safe to compute.
             return {
-                cls: InteractionEvent(cls, track.state, changed=False)
+                cls: InteractionEvent(cls, track.state, changed=False, zone=track.zone)
                 for cls, track in self._tracks.items()
             }
 
         objects_by_class = {obj.cls: obj for obj in frame.objects}
-        experiment_area = objects_by_class.get("experiment_area")
+        zones = [objects_by_class[name] for name in self.settings.target_zones if name in objects_by_class]
         hand_centers = [
             c
             for h in frame.hands
@@ -110,10 +136,11 @@ class InteractionReasoner:
         events: dict[str, InteractionEvent] = {}
         for cls in self._tracked_classes:
             track = self._tracks[cls]
-            new_state = self._update_track(track, objects_by_class.get(cls), hand_centers, experiment_area)
+            new_state, new_zone = self._update_track(track, objects_by_class.get(cls), hand_centers, zones)
             changed = new_state != track.state
             track.state = new_state
-            events[cls] = InteractionEvent(object_class=cls, state=new_state, changed=changed)
+            track.zone = new_zone
+            events[cls] = InteractionEvent(object_class=cls, state=new_state, changed=changed, zone=new_zone)
         return events
 
     # -- internals -----------------------------------------------------------
@@ -123,16 +150,16 @@ class InteractionReasoner:
         track: _ObjectTrack,
         obj: DetectedObject | None,
         hand_centers: list[tuple[float, float]],
-        experiment_area: DetectedObject | None,
-    ) -> InteractionState:
+        zones: list[DetectedObject],
+    ) -> tuple[InteractionState, Optional[str]]:
         if obj is None or not hand_centers:
             # A held/moving object doesn't spontaneously release just
             # because one frame had no detection (a hand closing around a
             # box routinely occludes its own color blob) — hold the state
             # and wait for the next real observation.
             if track.state in (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND):
-                return track.state
-            return InteractionState.NONE
+                return track.state, None
+            return InteractionState.NONE, None
 
         box_center = bbox_center(obj.bbox)
         nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
@@ -155,12 +182,15 @@ class InteractionReasoner:
 
         if currently_held:
             if distance <= touch_threshold:
-                return InteractionState.OBJECT_MOVING_WITH_HAND if self._is_moving(track) else InteractionState.OBJECT_BEING_HELD
-            # Hand pulled away while holding -> released, either into the
-            # experiment area (placed) or elsewhere (just dropped/released).
-            if experiment_area is not None and point_in_bbox(box_center, experiment_area.bbox):
-                return InteractionState.OBJECT_PLACED
-            return InteractionState.OBJECT_RELEASED
+                state = InteractionState.OBJECT_MOVING_WITH_HAND if self._is_moving(track) else InteractionState.OBJECT_BEING_HELD
+                return state, None
+            # Hand pulled away while holding -> released, either into a
+            # configured target zone (placed) or elsewhere (just
+            # dropped/released).
+            zone_name = _zone_containing(box_center, zones)
+            if zone_name is not None:
+                return InteractionState.OBJECT_PLACED, zone_name
+            return InteractionState.OBJECT_RELEASED, None
 
         if currently_resting:
             # A placed/released object doesn't spontaneously go back to
@@ -170,19 +200,19 @@ class InteractionReasoner:
             # gives Phase 4's temporal smoother something that holds stable
             # across frames to debounce, instead of a one-frame edge event.
             if distance <= touch_threshold:
-                return InteractionState.HAND_TOUCHING_OBJECT
-            return track.state
+                return InteractionState.HAND_TOUCHING_OBJECT, None
+            return track.state, track.zone
 
         if distance <= touch_threshold:
             # Require a HAND_TOUCHING_OBJECT frame before counting the
             # object as held, so a hand merely brushing past doesn't
             # register as a pick.
             if track.state == InteractionState.HAND_TOUCHING_OBJECT:
-                return InteractionState.OBJECT_BEING_HELD
-            return InteractionState.HAND_TOUCHING_OBJECT
+                return InteractionState.OBJECT_BEING_HELD, None
+            return InteractionState.HAND_TOUCHING_OBJECT, None
         if distance <= approach_threshold:
-            return InteractionState.HAND_APPROACHING_OBJECT
-        return InteractionState.NONE
+            return InteractionState.HAND_APPROACHING_OBJECT, None
+        return InteractionState.NONE, None
 
     def _is_moving(self, track: _ObjectTrack) -> bool:
         if len(track.box_history) < 2:

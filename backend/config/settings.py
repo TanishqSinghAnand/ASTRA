@@ -45,6 +45,20 @@ class PerceptionSettings(BaseModel):
     experiment_area: tuple[float, float, float, float] = (0.55, 0.55, 0.85, 0.85)
     colors: dict[str, ColorSpec] = Field(default_factory=dict)
 
+    # --- v2.0: general object detection (backend/perception/object_detector.py) ---
+    # "hsv" keeps v1's color-marker approach available; "yolo" is v2.0's
+    # default — real object identity (phone, cup, bottle, ...), no markers.
+    detector_backend: Literal["hsv", "yolo"] = "yolo"
+    yolo_model: str = "yolov8n.pt"
+    yolo_classes: list[str] = Field(default_factory=list)  # COCO class names to track, e.g. ["cell phone", "cup"]
+    yolo_confidence_threshold: float = 0.35
+
+    # --- v2.0: multiple named placement zones, not just one ---
+    # Each maps to a fraction-of-frame bbox [x1, y1, x2, y2], same shape as
+    # v1's single `experiment_area`. ExperimentStep.target names which zone
+    # (by this dict's key, case-insensitive) an object must land in.
+    target_zones: dict[str, tuple[float, float, float, float]] = Field(default_factory=dict)
+
 
 class TemporalSettings(BaseModel):
     action_stability_frames: int = 6

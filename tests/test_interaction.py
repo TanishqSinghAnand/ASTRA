@@ -20,9 +20,15 @@ OUTSIDE_EXPERIMENT_AREA = (150.0, 150.0)
 
 def _settings(**overrides) -> PerceptionSettings:
     base = dict(
+        detector_backend="hsv",
         hand_object_distance_px=80,
         hand_object_touch_distance_px=40,
         colors={"red_box": ColorSpec(ranges=[HSVRange(lower=(0, 0, 0), upper=(1, 1, 1))])},
+        # Values are unused by these tests (DetectedObjects are constructed
+        # directly with absolute pixel bboxes in _frame()) — only the key
+        # needs to exist so interaction.py recognizes "experiment_area" as
+        # a valid zone name to look up.
+        target_zones={"experiment_area": (0.0, 0.0, 0.0, 0.0)},
     )
     base.update(overrides)
     return PerceptionSettings(**base)
@@ -125,6 +131,35 @@ def test_release_inside_experiment_area_is_placed():
     reasoner.update(_frame(1, area_center, (area_center[0] + 10, area_center[1])))
     event = reasoner.update(_frame(2, area_center, (50.0, 50.0)))["red_box"]
     assert event.state == InteractionState.OBJECT_PLACED
+    assert event.zone == "experiment_area"
+
+
+def test_multiple_zones_report_which_one_was_landed_in():
+    # v2.0: two distinct named zones instead of one fixed area.
+    zone_a_bbox = BBox(x1=0, y1=0, x2=200, y2=200)
+    zone_b_bbox = BBox(x1=400, y1=300, x2=600, y2=460)
+    settings = _settings(target_zones={"zone_a": (0.0, 0.0, 0.0, 0.0), "zone_b": (0.0, 0.0, 0.0, 0.0)})
+    reasoner = InteractionReasoner(settings)
+
+    def frame_with_zones(idx, box_center, hand_center):
+        objects = [
+            DetectedObject(**{"class": "zone_a"}, confidence=1.0, bbox=zone_a_bbox),
+            DetectedObject(**{"class": "zone_b"}, confidence=1.0, bbox=zone_b_bbox),
+            _box(box_center),
+        ]
+        hands = [_hand(hand_center)] if hand_center is not None else []
+        return PerceptionFrame(frame_index=idx, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects, hands=hands)
+
+    # Pick up outside both zones, place inside zone_b specifically.
+    pick_point = (300.0, 380.0)
+    reasoner.update(frame_with_zones(0, pick_point, (pick_point[0] + 10, pick_point[1])))
+    reasoner.update(frame_with_zones(1, pick_point, (pick_point[0] + 10, pick_point[1])))
+    place_in_b = (500.0, 380.0)  # inside zone_b only
+    reasoner.update(frame_with_zones(2, place_in_b, (place_in_b[0] + 10, place_in_b[1])))
+    event = reasoner.update(frame_with_zones(3, place_in_b, (50.0, 50.0)))["red_box"]
+
+    assert event.state == InteractionState.OBJECT_PLACED
+    assert event.zone == "zone_b"
 
 
 def test_placed_state_persists_until_retouched():
@@ -232,3 +267,4 @@ def test_full_pick_move_place_trajectory():
     assert InteractionState.OBJECT_MOVING_WITH_HAND in states[3:]
     assert place_event.state == InteractionState.OBJECT_PLACED
     assert place_event.changed is True
+    assert place_event.zone == "experiment_area"

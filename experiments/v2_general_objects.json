@@ -1,0 +1,50 @@
+{
+  "experiment_id": "V2_GENERAL_OBJECTS_001",
+  "name": "General Object Placement Demo (v2.0)",
+  "description": "Pick up everyday objects recognized by a pretrained general object detector (YOLOv8, no color markers, no custom training) and place each in its own designated zone — demonstrates real object identity plus per-object target locations.",
+  "objects": {
+    "CELL_PHONE": { "label": "phone", "color_hint": null },
+    "CUP": { "label": "cup", "color_hint": null },
+    "ZONE_A": { "label": "zone A", "color_hint": null },
+    "ZONE_B": { "label": "zone B", "color_hint": null }
+  },
+  "steps": [
+    {
+      "id": 1,
+      "action": "PICK",
+      "object": "CELL_PHONE",
+      "instruction": "Pick up the phone.",
+      "voice_next": "Next, place the phone in zone A."
+    },
+    {
+      "id": 2,
+      "action": "PLACE",
+      "object": "CELL_PHONE",
+      "target": "ZONE_A",
+      "instruction": "Place the phone in zone A.",
+      "voice_next": "Next, pick up the cup."
+    },
+    {
+      "id": 3,
+      "action": "PICK",
+      "object": "CUP",
+      "instruction": "Pick up the cup.",
+      "voice_next": "Next, place the cup in zone B."
+    },
+    {
+      "id": 4,
+      "action": "PLACE",
+      "object": "CUP",
+      "target": "ZONE_B",
+      "instruction": "Place the cup in zone B.",
+      "voice_next": "Experiment completed successfully."
+    },
+    {
+      "id": 5,
+      "action": "COMPLETE",
+      "object": "EXPERIMENT",
+      "instruction": "Close out the experiment.",
+      "voice_next": "Experiment completed successfully."
+    }
+  ]
+}

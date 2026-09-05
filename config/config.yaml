@@ -48,6 +48,25 @@ perception:
         - lower: [100, 110, 60]
           upper: [128, 255, 255]
 
+  # --- v2.0: general object detection ---
+  # "yolo" recognizes real object identity (phone, cup, bottle, ...) via a
+  # pretrained model — no color markers, no training. "hsv" keeps v1's
+  # color-detector path available (colors: above) if ever needed again.
+  detector_backend: yolo
+  yolo_model: yolov8n.pt          # downloads once on first use, cached after
+  yolo_confidence_threshold: 0.35
+  yolo_classes:                    # COCO class names to track (exact names
+    - cell phone                   # YOLO uses, e.g. "cell phone" with a space)
+    - cup
+
+  # --- v2.0: multiple named placement zones (fraction-of-frame [x1,y1,x2,y2]) ---
+  # Each ExperimentStep.target names one of these keys (case-insensitive) —
+  # e.g. v2_general_objects.json's step 2 targets "ZONE_A". Calibrated
+  # regions, not detected — same reasoning as v1's single experiment_area.
+  target_zones:
+    zone_a: [0.05, 0.55, 0.35, 0.85]
+    zone_b: [0.65, 0.55, 0.95, 0.85]
+
 # --- Temporal smoothing / hysteresis (used from Phase 4/6 onward) ---
 temporal:
   action_stability_frames: 6      # a prediction must hold for N frames to count
@@ -69,7 +88,7 @@ model_device: auto
 
 # --- Paths ---
 paths:
-  experiment_config: "experiments/bas_sample_001.json"
+  experiment_config: "experiments/v2_general_objects.json"
   recordings_dir: "data/recordings"
   reports_dir: "data/reports"
   raw_data_dir: "data/raw"

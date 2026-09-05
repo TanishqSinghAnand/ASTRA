@@ -2,8 +2,22 @@
 markers. Shared by tools/live_preview.py now and by the WebSocket frame
 stream / recording_service.py once real perception is wired into the
 backend (Phase 9) — annotation logic should only exist once.
+
+v2.0: object classes are no longer just "red_box"/"blue_box" (YOLO can
+detect any of 80 COCO classes) and zones are no longer just one
+"experiment_area" (settings.target_zones can name several). Rather than
+hardcode every possible class/zone name, a calibrated zone is identified
+generically (confidence == 1.0 — see zones.py's docstring: "always
+certain", never a real detection score) and any object/zone class without
+an explicit color gets one deterministically hashed from its name, so it's
+at least *consistent* across frames without needing a color assigned
+ahead of time.
 """
 from __future__ import annotations
+
+import colorsys
+import zlib
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -15,6 +29,23 @@ _OBJECT_COLORS = {
     "blue_box": (220, 120, 40),
     "experiment_area": (150, 150, 150),
 }
+
+_ZONE_FALLBACK_COLOR = (170, 170, 170)
+
+
+def _is_zone(obj_confidence: float) -> bool:
+    return obj_confidence >= 0.999  # calibrated zones are always "certain" — see zones.py
+
+
+@lru_cache(maxsize=128)
+def _color_for_class(cls: str) -> tuple[int, int, int]:
+    """Deterministic (crc32, not Python's randomized hash() — stable
+    across process restarts, not just within one), reasonably saturated
+    BGR color from a class name — used only when `cls` isn't in
+    _OBJECT_COLORS above."""
+    hue = (zlib.crc32(cls.encode()) % 360) / 360.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
+    return (int(b * 255), int(g * 255), int(r * 255))
 
 _POSE_BONES = [
     ("left_shoulder", "right_shoulder"),
@@ -39,16 +70,16 @@ def draw_perception_overlay(frame: np.ndarray, perception: PerceptionFrame) -> n
     h, w = annotated.shape[:2]
 
     for obj in perception.objects:
-        color = _OBJECT_COLORS.get(obj.cls, (200, 200, 200))
+        zone = _is_zone(obj.confidence)
+        color = _OBJECT_COLORS.get(obj.cls) or (_ZONE_FALLBACK_COLOR if zone else _color_for_class(obj.cls))
         p1 = (int(obj.bbox.x1), int(obj.bbox.y1))
         p2 = (int(obj.bbox.x2), int(obj.bbox.y2))
-        thickness = 1 if obj.cls == "experiment_area" else 2
-        style_dashed = obj.cls == "experiment_area"
-        if style_dashed:
+        thickness = 1 if zone else 2
+        if zone:
             _dashed_rect(annotated, p1, p2, color, thickness)
         else:
             cv2.rectangle(annotated, p1, p2, color, thickness)
-        label = f"{obj.cls} {obj.confidence:.0%}"
+        label = obj.cls if zone else f"{obj.cls} {obj.confidence:.0%}"
         cv2.putText(annotated, label, (p1[0], max(15, p1[1] - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 

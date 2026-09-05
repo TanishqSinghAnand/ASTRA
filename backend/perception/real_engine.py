@@ -1,9 +1,7 @@
-"""Composes the color detector + pose + hands wrappers into one
-PerceptionEngine, per the PerceptionEngine interface. This is the drop-in
-replacement for backend/mocks/mock_engines.py::MockPerceptionEngine —
-inference_service.py can swap one line to point here once action
-recognition (Phase 3/4) is ready to consume real detections. Until then,
-it's exercised directly by tools/live_preview.py.
+"""Composes an object detector (HSV or, from v2.0, YOLO) + pose + hands
+wrappers into one PerceptionEngine, per the PerceptionEngine interface.
+This is the drop-in replacement for
+backend/mocks/mock_engines.py::MockPerceptionEngine.
 """
 from __future__ import annotations
 
@@ -14,18 +12,21 @@ from backend.perception.base import PerceptionFrame
 from backend.perception.color_detector import ColorBoxDetector
 from backend.perception.hands import HandEstimator
 from backend.perception.interfaces import PerceptionEngine
+from backend.perception.object_detector import ObjectDetector
 from backend.perception.pose import PoseEstimator
+from backend.perception.zones import zone_objects
 
 
 class RealPerceptionEngine(PerceptionEngine):
     def __init__(self, settings: PerceptionSettings):
-        self.detector = ColorBoxDetector(settings)
+        self.settings = settings
+        self.detector = ObjectDetector(settings) if settings.detector_backend == "yolo" else ColorBoxDetector(settings)
         self.pose = PoseEstimator()
         self.hands = HandEstimator()
 
     def process(self, frame: np.ndarray, frame_index: int) -> PerceptionFrame:
         h, w = frame.shape[:2]
-        objects = self.detector.detect(frame)
+        objects = self.detector.detect(frame) + zone_objects(self.settings, w, h)
         pose_frame = self.pose.process(frame)
         hand_frames = self.hands.process(frame)
         return PerceptionFrame(

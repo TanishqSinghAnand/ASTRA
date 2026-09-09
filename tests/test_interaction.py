@@ -1,34 +1,32 @@
 """Tests for backend/perception/interaction.py.
 
-Per the Phase 3 testing note: synthetic_scene.py only draws static colored
-squares (no simulated hand) and MediaPipe can't detect a hand/pose from a
-procedurally generated blob anyway, so this cannot be exercised through the
-real camera pipeline. Instead we hand-construct PerceptionFrame sequences
-directly (fabricated DetectedObject/HandFrame/Landmark trajectories) and
-feed them straight into InteractionReasoner, bypassing MediaPipe entirely.
+interaction.py tracks each object's own position over time — no hand
+simulation needed at all (a deliberate redesign after real-camera testing
+showed hand-proximity tracking too unreliable; see interaction.py's module
+docstring). We hand-construct PerceptionFrame sequences with a moving or
+stationary DetectedObject and feed them straight into InteractionReasoner.
 """
 from __future__ import annotations
 
 from backend.config.settings import ColorSpec, HSVRange, PerceptionSettings
-from backend.perception.base import BBox, DetectedObject, HandFrame, InteractionState, Landmark, PerceptionFrame
+from backend.perception.base import BBox, DetectedObject, InteractionState, PerceptionFrame
 from backend.perception.interaction import InteractionReasoner
 
 FRAME_W, FRAME_H = 640, 480
-EXPERIMENT_AREA_BBOX = BBox(x1=400, y1=300, x2=600, y2=460)
-OUTSIDE_EXPERIMENT_AREA = (150.0, 150.0)
+ZONE_BBOX = BBox(x1=400, y1=300, x2=600, y2=460)
+ZONE_CENTER = (500.0, 380.0)
+OUTSIDE_ZONE = (150.0, 150.0)
 
 
 def _settings(**overrides) -> PerceptionSettings:
     base = dict(
         detector_backend="hsv",
-        hand_object_distance_px=80,
-        hand_object_touch_distance_px=40,
         colors={"red_box": ColorSpec(ranges=[HSVRange(lower=(0, 0, 0), upper=(1, 1, 1))])},
         # Values are unused by these tests (DetectedObjects are constructed
         # directly with absolute pixel bboxes in _frame()) — only the key
-        # needs to exist so interaction.py recognizes "experiment_area" as
-        # a valid zone name to look up.
-        target_zones={"experiment_area": (0.0, 0.0, 0.0, 0.0)},
+        # needs to exist so interaction.py recognizes "zone" as a valid
+        # zone name to look up.
+        target_zones={"zone": (0.0, 0.0, 0.0, 0.0)},
     )
     base.update(overrides)
     return PerceptionSettings(**base)
@@ -43,180 +41,199 @@ def _box(center: tuple[float, float], cls: str = "red_box", half_size: float = 2
     )
 
 
-def _hand(center_px: tuple[float, float]) -> HandFrame:
-    nx, ny = center_px[0] / FRAME_W, center_px[1] / FRAME_H
-    return HandFrame(
-        detected=True,
-        handedness="Right",
-        landmarks=[
-            Landmark(name="wrist", x=nx, y=ny),
-            Landmark(name="index_mcp", x=nx, y=ny),
-            Landmark(name="pinky_mcp", x=nx, y=ny),
-        ],
-    )
-
-
 def _frame(
     frame_index: int,
     box_center: tuple[float, float] | None,
-    hand_center_px: tuple[float, float] | None,
-    include_area: bool = True,
+    include_zone: bool = True,
+    zone_bbox: BBox = ZONE_BBOX,
+    zone_cls: str = "zone",
 ) -> PerceptionFrame:
     objects = []
-    if include_area:
-        objects.append(DetectedObject(**{"class": "experiment_area"}, confidence=1.0, bbox=EXPERIMENT_AREA_BBOX))
+    if include_zone:
+        objects.append(DetectedObject(**{"class": zone_cls}, confidence=1.0, bbox=zone_bbox))
     if box_center is not None:
         objects.append(_box(box_center))
-    hands = [_hand(hand_center_px)] if hand_center_px is not None else []
-    return PerceptionFrame(frame_index=frame_index, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects, hands=hands)
+    return PerceptionFrame(frame_index=frame_index, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects)
 
 
-def test_hand_far_from_object_is_none():
+def _hold_still(reasoner: InteractionReasoner, center: tuple[float, float], frames: int = 3, start_index: int = 0):
+    """Feeds enough identical-position frames to establish a stable
+    baseline (so a later displacement is unambiguously "moved from here",
+    not just the first couple of samples ever seen)."""
+    event = None
+    for i in range(frames):
+        event = reasoner.update(_frame(start_index + i, center))["red_box"]
+    return event
+
+
+def _move(reasoner: InteractionReasoner, path: list[tuple[float, float]], start_index: int = 0):
+    """Feeds one frame per position in path, returning the last event."""
+    event = None
+    for i, center in enumerate(path):
+        event = reasoner.update(_frame(start_index + i, center))["red_box"]
+    return event
+
+
+def test_stationary_object_stays_none():
     reasoner = InteractionReasoner(_settings())
-    events = reasoner.update(_frame(0, box_center=(100, 100), hand_center_px=(500, 400)))
-    assert events["red_box"].state == InteractionState.NONE
+    event = _hold_still(reasoner, OUTSIDE_ZONE, frames=6)
+    assert event.state == InteractionState.NONE
 
 
-def test_hand_within_approach_threshold():
+def test_small_jitter_does_not_trigger_held():
     reasoner = InteractionReasoner(_settings())
-    # distance = 60, between touch(40) and approach(80)
-    events = reasoner.update(_frame(0, box_center=(100, 100), hand_center_px=(160, 100)))
-    assert events["red_box"].state == InteractionState.HAND_APPROACHING_OBJECT
+    # Sub-pixel-scale jitter around one spot — well under the movement
+    # threshold, must not be mistaken for a genuine pick.
+    x, y = OUTSIDE_ZONE
+    jitter_path = [(x, y), (x + 2, y), (x - 1, y + 2), (x, y - 1), (x + 1, y), (x, y)]
+    event = _move(reasoner, jitter_path)
+    assert event.state == InteractionState.NONE
 
 
-def test_touching_requires_two_frames_before_held():
+def test_genuine_displacement_becomes_held():
     reasoner = InteractionReasoner(_settings())
-    box = (100.0, 100.0)
-    hand = (115.0, 100.0)  # distance = 15, within touch threshold (40)
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    # A real lift/carry: displaces by well more than the movement threshold.
+    x, y = OUTSIDE_ZONE
+    events = [
+        reasoner.update(_frame(3 + i, c))["red_box"]
+        for i, c in enumerate([(x + 10, y), (x + 40, y), (x + 90, y)])
+    ]
+    assert events[-1].state == InteractionState.OBJECT_BEING_HELD
+    assert any(e.changed and e.state == InteractionState.OBJECT_BEING_HELD for e in events)
 
-    first = reasoner.update(_frame(0, box, hand))
-    assert first["red_box"].state == InteractionState.HAND_TOUCHING_OBJECT
-    assert first["red_box"].changed is True
 
-    second = reasoner.update(_frame(1, box, hand))
-    assert second["red_box"].state == InteractionState.OBJECT_BEING_HELD
-    assert second["red_box"].changed is True
-
-
-def test_held_object_moving_with_hand_becomes_moving():
+def test_held_then_stops_outside_zone_is_released():
     reasoner = InteractionReasoner(_settings())
-    hand_offset = 10.0  # hand stays 10px from box center throughout -> always "touching"
-
-    # Get into OBJECT_BEING_HELD first.
-    reasoner.update(_frame(0, (100, 100), (100 + hand_offset, 100)))
-    reasoner.update(_frame(1, (100, 100), (100 + hand_offset, 100)))
-
-    # Now walk the box+hand together by a large displacement over a few
-    # frames -> should flip to OBJECT_MOVING_WITH_HAND once the box's first
-    # vs. latest tracked position exceeds the noise floor.
-    last_event = None
-    for i, x in enumerate([120, 160, 200, 260], start=2):
-        last_event = reasoner.update(_frame(i, (x, 100), (x + hand_offset, 100)))["red_box"]
-    assert last_event.state == InteractionState.OBJECT_MOVING_WITH_HAND
-
-
-def test_release_outside_experiment_area():
-    reasoner = InteractionReasoner(_settings())
-    reasoner.update(_frame(0, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
-    reasoner.update(_frame(1, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
-    # Hand pulls far away while the box stays put and outside the experiment area.
-    event = reasoner.update(_frame(2, OUTSIDE_EXPERIMENT_AREA, (400.0, 400.0)))["red_box"]
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    _move(reasoner, [(160, 150), (220, 150), (280, 150)], start_index=3)
+    # Comes to rest, still outside the zone.
+    event = _move(reasoner, [(280, 150)] * 3, start_index=6)
     assert event.state == InteractionState.OBJECT_RELEASED
+    assert event.zone is None
 
 
-def test_release_inside_experiment_area_is_placed():
+def test_held_then_stops_inside_zone_is_placed():
     reasoner = InteractionReasoner(_settings())
-    area_center = (500.0, 380.0)  # inside EXPERIMENT_AREA_BBOX
-    reasoner.update(_frame(0, area_center, (area_center[0] + 10, area_center[1])))
-    reasoner.update(_frame(1, area_center, (area_center[0] + 10, area_center[1])))
-    event = reasoner.update(_frame(2, area_center, (50.0, 50.0)))["red_box"]
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    path = [(200, 200), (300, 280), (400, 340), (ZONE_CENTER[0], ZONE_CENTER[1])]
+    _move(reasoner, path, start_index=3)
+    event = _move(reasoner, [ZONE_CENTER] * 3, start_index=3 + len(path))
     assert event.state == InteractionState.OBJECT_PLACED
-    assert event.zone == "experiment_area"
+    assert event.zone == "zone"
 
 
 def test_multiple_zones_report_which_one_was_landed_in():
-    # v2.0: two distinct named zones instead of one fixed area.
     zone_a_bbox = BBox(x1=0, y1=0, x2=200, y2=200)
     zone_b_bbox = BBox(x1=400, y1=300, x2=600, y2=460)
     settings = _settings(target_zones={"zone_a": (0.0, 0.0, 0.0, 0.0), "zone_b": (0.0, 0.0, 0.0, 0.0)})
     reasoner = InteractionReasoner(settings)
 
-    def frame_with_zones(idx, box_center, hand_center):
+    def frame_with_zones(idx, box_center):
         objects = [
             DetectedObject(**{"class": "zone_a"}, confidence=1.0, bbox=zone_a_bbox),
             DetectedObject(**{"class": "zone_b"}, confidence=1.0, bbox=zone_b_bbox),
             _box(box_center),
         ]
-        hands = [_hand(hand_center)] if hand_center is not None else []
-        return PerceptionFrame(frame_index=idx, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects, hands=hands)
+        return PerceptionFrame(frame_index=idx, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects)
 
-    # Pick up outside both zones, place inside zone_b specifically.
-    pick_point = (300.0, 380.0)
-    reasoner.update(frame_with_zones(0, pick_point, (pick_point[0] + 10, pick_point[1])))
-    reasoner.update(frame_with_zones(1, pick_point, (pick_point[0] + 10, pick_point[1])))
+    pick_point = (300.0, 380.0)  # outside both zones
+    for i in range(3):
+        reasoner.update(frame_with_zones(i, pick_point))
     place_in_b = (500.0, 380.0)  # inside zone_b only
-    reasoner.update(frame_with_zones(2, place_in_b, (place_in_b[0] + 10, place_in_b[1])))
-    event = reasoner.update(frame_with_zones(3, place_in_b, (50.0, 50.0)))["red_box"]
+    path = [(350, 380), (420, 380), place_in_b]
+    for i, center in enumerate(path, start=3):
+        reasoner.update(frame_with_zones(i, center))
+    event = None
+    for i in range(3 + len(path), 3 + len(path) + 3):
+        event = reasoner.update(frame_with_zones(i, place_in_b))["red_box"]
 
     assert event.state == InteractionState.OBJECT_PLACED
     assert event.zone == "zone_b"
 
 
-def test_placed_state_persists_until_retouched():
+def test_placed_state_persists_and_is_sticky():
     reasoner = InteractionReasoner(_settings())
-    area_center = (500.0, 380.0)
-    reasoner.update(_frame(0, area_center, (area_center[0] + 10, area_center[1])))
-    reasoner.update(_frame(1, area_center, (area_center[0] + 10, area_center[1])))
-    placed = reasoner.update(_frame(2, area_center, (50.0, 50.0)))["red_box"]
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    path = [(250, 250), (350, 300), (450, 350), ZONE_CENTER]
+    _move(reasoner, path, start_index=3)
+    idx = 3 + len(path)
+    placed = _move(reasoner, [ZONE_CENTER] * 3, start_index=idx)
     assert placed.state == InteractionState.OBJECT_PLACED
+    idx += 3
 
-    # Hand stays far away, box hasn't moved -> still placed, several frames later.
-    for i in range(3, 8):
-        ev = reasoner.update(_frame(i, area_center, (50.0, 50.0)))["red_box"]
+    # Stays put for many more frames -> still placed, no spurious re-fire.
+    for i in range(idx, idx + 6):
+        ev = reasoner.update(_frame(i, ZONE_CENTER))["red_box"]
         assert ev.state == InteractionState.OBJECT_PLACED
         assert ev.changed is False
 
-    # Hand comes back and touches it -> restarts the touch/hold cycle rather
-    # than staying stuck in PLACED forever.
-    retouch = reasoner.update(_frame(8, area_center, (area_center[0] + 10, area_center[1])))["red_box"]
-    assert retouch.state == InteractionState.HAND_TOUCHING_OBJECT
 
-
-def test_released_state_persists_until_retouched():
+def test_resting_object_reactivates_on_movement():
     reasoner = InteractionReasoner(_settings())
-    reasoner.update(_frame(0, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
-    reasoner.update(_frame(1, OUTSIDE_EXPERIMENT_AREA, (OUTSIDE_EXPERIMENT_AREA[0] + 10, OUTSIDE_EXPERIMENT_AREA[1])))
-    released = reasoner.update(_frame(2, OUTSIDE_EXPERIMENT_AREA, (400.0, 400.0)))["red_box"]
-    assert released.state == InteractionState.OBJECT_RELEASED
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    path = [(250, 250), (350, 300), (450, 350), ZONE_CENTER]
+    _move(reasoner, path, start_index=3)
+    idx = 3 + len(path)
+    _move(reasoner, [ZONE_CENTER] * 3, start_index=idx)
+    idx += 3
 
-    ev = reasoner.update(_frame(3, OUTSIDE_EXPERIMENT_AREA, (400.0, 400.0)))["red_box"]
-    assert ev.state == InteractionState.OBJECT_RELEASED
-    assert ev.changed is False
+    # Picked back up and moved elsewhere -> a fresh hold, not stuck PLACED.
+    move_again = [(x, ZONE_CENTER[1]) for x in (ZONE_CENTER[0] - 30, ZONE_CENTER[0] - 80, ZONE_CENTER[0] - 150)]
+    event = _move(reasoner, move_again, start_index=idx)
+    assert event.state == InteractionState.OBJECT_BEING_HELD
+
+
+def test_release_caught_early_upgrades_to_placed_next_frame():
+    """A release classified RELEASED on the exact settling frame (bbox
+    estimate just under the zone's overlap-ratio threshold) must be able
+    to upgrade to PLACED on a later frame once a small jitter (well under
+    the movement threshold, so not mistaken for a fresh pick) nudges the
+    reported position further into the zone — not frozen at the first
+    reading forever."""
+    reasoner = InteractionReasoner(_settings())
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    # 40x40 box (half_size=20) centered at x=385: overlap width with the
+    # zone (x1=400) is 5px -> ratio 5*40/1600 = 0.125, just under the 0.2
+    # threshold -> RELEASED, not PLACED, on settling.
+    just_outside = (385.0, 380.0)
+    path = [(250, 300), (320, 340), just_outside]
+    _move(reasoner, path, start_index=3)
+    idx = 3 + len(path)
+    first_rest = _move(reasoner, [just_outside] * 3, start_index=idx)
+    assert first_rest.state == InteractionState.OBJECT_RELEASED
+    idx += 3
+
+    # A 10px jitter (comfortably under the 28px movement threshold, so
+    # still "resting" not a new pick) to x=395: overlap width 15px ->
+    # ratio 15*40/1600 = 0.375 -> now clears the threshold.
+    settled = reasoner.update(_frame(idx, (395.0, 380.0)))["red_box"]
+    assert settled.state == InteractionState.OBJECT_PLACED
+    assert settled.zone == "zone"
 
 
 def test_occlusion_gap_preserves_held_state():
     reasoner = InteractionReasoner(_settings())
-    box = (100.0, 100.0)
-    hand = (110.0, 100.0)
-    reasoner.update(_frame(0, box, hand))
-    reasoner.update(_frame(1, box, hand))  # now OBJECT_BEING_HELD
-    # Box briefly undetected (hand occluding its own color blob) — state
-    # must not reset to NONE/RELEASED just because of a missing detection.
-    gap_event = reasoner.update(_frame(2, box_center=None, hand_center_px=hand))["red_box"]
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    _move(reasoner, [(200, 150), (280, 150), (360, 150)], start_index=3)
+    held_event = reasoner.update(_frame(6, (360, 150)))["red_box"]
+    assert held_event.state == InteractionState.OBJECT_BEING_HELD
+
+    # Box briefly undetected (e.g. a hand occluding its own color blob) —
+    # state must not reset just because of a missing detection.
+    gap_event = reasoner.update(_frame(7, box_center=None))["red_box"]
     assert gap_event.state == InteractionState.OBJECT_BEING_HELD
     assert gap_event.changed is False
 
 
 def test_reset_clears_all_tracks():
     reasoner = InteractionReasoner(_settings())
-    box = (100.0, 100.0)
-    hand = (110.0, 100.0)
-    reasoner.update(_frame(0, box, hand))
-    reasoner.update(_frame(1, box, hand))
-    assert reasoner.update(_frame(2, box, hand))["red_box"].state == InteractionState.OBJECT_BEING_HELD
+    _hold_still(reasoner, OUTSIDE_ZONE, frames=3)
+    event = _move(reasoner, [(200, 150), (280, 150), (360, 150)], start_index=3)
+    assert event.state == InteractionState.OBJECT_BEING_HELD
 
     reasoner.reset()
-    event = reasoner.update(_frame(3, box_center=None, hand_center_px=None))["red_box"]
+    event = reasoner.update(_frame(99, box_center=None))["red_box"]
     assert event.state == InteractionState.NONE
 
 
@@ -228,7 +245,7 @@ def test_tracked_classes_come_from_settings_colors():
         }
     )
     reasoner = InteractionReasoner(settings)
-    events = reasoner.update(_frame(0, box_center=None, hand_center_px=None))
+    events = reasoner.update(_frame(0, box_center=None))
     assert set(events.keys()) == {"red_box", "blue_box"}
 
 
@@ -241,30 +258,25 @@ def test_unknown_frame_dimensions_are_safe_noop():
 
 
 def test_full_pick_move_place_trajectory():
-    """End-to-end: approach -> touch -> hold -> move -> place, asserting
-    the state at each stage and that OBJECT_PLACED only fires once, on the
-    frame the box actually lands inside the experiment area."""
+    """End-to-end: resting -> picked up -> carried -> placed, asserting the
+    state at each stage and that OBJECT_PLACED only fires once, on the
+    frame the box actually comes to rest inside the zone."""
     reasoner = InteractionReasoner(_settings())
-    hand_offset = 10.0
     states = []
 
-    # Approach
-    states.append(reasoner.update(_frame(0, (100, 100), (170, 100)))["red_box"].state)  # dist=70 -> approaching
-    # Touch (first + second frame)
-    states.append(reasoner.update(_frame(1, (100, 100), (100 + hand_offset, 100)))["red_box"].state)
-    states.append(reasoner.update(_frame(2, (100, 100), (100 + hand_offset, 100)))["red_box"].state)
-    # Move together toward the experiment area
+    # Resting, untouched.
+    states.append(_hold_still(reasoner, (100, 100), frames=3))
+    # Picked up and carried toward the zone.
+    path = [(140, 150), (220, 220), (320, 300), (420, 350), (480, 370)]
     events = None
-    for i, x in enumerate([140, 200, 300, 400, 480], start=3):
-        events = reasoner.update(_frame(i, (x, 380), (x + hand_offset, 380)))
-        states.append(events["red_box"].state)
-    # Release inside the experiment area (500, 380 is inside EXPERIMENT_AREA_BBOX)
-    place_event = reasoner.update(_frame(9, (500, 380), (50, 50)))["red_box"]
+    for i, center in enumerate(path, start=3):
+        events = reasoner.update(_frame(i, center))
+        states.append(events["red_box"])
+    # Comes to rest inside the zone.
+    idx = 3 + len(path)
+    place_event = _move(reasoner, [ZONE_CENTER] * 3, start_index=idx)
 
-    assert states[0] == InteractionState.HAND_APPROACHING_OBJECT
-    assert states[1] == InteractionState.HAND_TOUCHING_OBJECT
-    assert states[2] == InteractionState.OBJECT_BEING_HELD
-    assert InteractionState.OBJECT_MOVING_WITH_HAND in states[3:]
+    assert states[0].state == InteractionState.NONE
+    assert any(s.state == InteractionState.OBJECT_BEING_HELD for s in states[1:])
     assert place_event.state == InteractionState.OBJECT_PLACED
-    assert place_event.changed is True
-    assert place_event.zone == "experiment_area"
+    assert place_event.zone == "zone"

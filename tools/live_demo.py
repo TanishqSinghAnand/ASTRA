@@ -40,7 +40,6 @@ from backend.perception.base import ERROR_STATUSES, SequenceEvent, SequenceStatu
 from backend.perception.real_engine import RealPerceptionEngine  # noqa: E402
 from backend.services.camera_service import CameraError, CameraService  # noqa: E402
 from backend.services.display_utils import DEFAULT_DISPLAY_MAX_WIDTH, fit_for_display, gui_available  # noqa: E402
-from backend.perception.interaction import bbox_center, hand_center_px  # noqa: E402
 from backend.services.overlay import draw_label, draw_perception_overlay  # noqa: E402
 from backend.temporal.action_recognizer import RuleBasedActionRecognizer  # noqa: E402
 
@@ -129,35 +128,21 @@ def main() -> None:
                 continue
 
             pframe = perception.process(captured.frame, captured.frame_index)
+            prediction = action_recognizer.update(pframe)
 
-            # -- debug: real hand-object distance, to see exactly why a
-            # touch/hold isn't registering instead of guessing blind.
-            hand_pts = [
-                c
-                for h in pframe.hands
-                if (c := hand_center_px(h, pframe.frame_width, pframe.frame_height)) is not None
+            # -- debug: per-object motion state, to see exactly why a pick/
+            # place isn't registering instead of guessing blind. Reflects
+            # action_recognizer.last_events, set by the update() call above
+            # — not a second, separate detection pass.
+            debug_lines: list[str] = [
+                f"{cls}: {event.state.value}" + (f" (zone={event.zone})" if event.zone else "")
+                for cls, event in action_recognizer.last_events.items()
             ]
-            debug_lines: list[str] = []
-            for obj in pframe.objects:
-                if obj.confidence >= 0.999:
-                    continue  # skip zones — only real detections
-                center = bbox_center(obj.bbox)
-                if hand_pts:
-                    dist = min(((hx - center[0]) ** 2 + (hy - center[1]) ** 2) ** 0.5 for hx, hy in hand_pts)
-                    debug_lines.append(
-                        f"{obj.cls}: hand-dist={dist:.0f}px "
-                        f"(touch<={settings.perception.hand_object_touch_distance_px} "
-                        f"approach<={settings.perception.hand_object_distance_px})"
-                    )
-                else:
-                    debug_lines.append(f"{obj.cls}: no hand detected this frame")
             now = time.time()
             if debug_lines and now - last_debug_print > 1.0:
                 last_debug_print = now
                 for line in debug_lines:
-                    print(f"[debug] {line}  frame={pframe.frame_width}x{pframe.frame_height} hands={len(pframe.hands)}")
-
-            prediction = action_recognizer.update(pframe)
+                    print(f"[debug] {line}  frame={pframe.frame_width}x{pframe.frame_height}")
 
             # Same history-diff pattern as inference_service.py:
             # submit_action returns only its single "headline" event, but

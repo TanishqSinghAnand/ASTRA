@@ -1,7 +1,11 @@
-"""Draws perception results onto a frame: object boxes, pose skeleton, hand
-markers. Shared by tools/live_preview.py now and by the WebSocket frame
-stream / recording_service.py once real perception is wired into the
-backend (Phase 9) — annotation logic should only exist once.
+"""Draws perception results onto a frame: object boxes + hand markers.
+Shared by tools/live_preview.py now and by the WebSocket frame stream /
+recording_service.py once real perception is wired into the backend
+(Phase 9) — annotation logic should only exist once.
+
+No pose/body skeleton: this demo runs on a tabletop with the camera fixed
+on the work surface, and nothing in the interaction/action logic ever
+read pose data (see backend/perception/real_engine.py's docstring).
 
 v2.0: object classes are no longer just "red_box"/"blue_box" (YOLO can
 detect any of 80 COCO classes) and zones are no longer just one
@@ -59,20 +63,8 @@ def draw_label(img: np.ndarray, text: str, org: tuple[int, int], color, font_sca
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness, cv2.LINE_AA)
 
-_POSE_BONES = [
-    ("left_shoulder", "right_shoulder"),
-    ("left_shoulder", "left_elbow"),
-    ("left_elbow", "left_wrist"),
-    ("right_shoulder", "right_elbow"),
-    ("right_elbow", "right_wrist"),
-    ("left_shoulder", "left_hip"),
-    ("right_shoulder", "right_hip"),
-    ("left_hip", "right_hip"),
-]
-
 _HAND_BONES = [("wrist", "index_mcp"), ("wrist", "pinky_mcp"), ("index_mcp", "pinky_mcp")]
 
-POSE_COLOR = (58, 217, 203)     # accent cyan, BGR
 HAND_COLOR = (0, 220, 255)      # amber-yellow, BGR
 
 
@@ -93,14 +85,6 @@ def draw_perception_overlay(frame: np.ndarray, perception: PerceptionFrame) -> n
             cv2.rectangle(annotated, p1, p2, color, thickness)
         label = obj.cls if zone else f"{obj.cls} {obj.confidence:.0%}"
         draw_label(annotated, label, (p1[0], max(22, p1[1] - 10)), color, font_scale=0.7)
-
-    if perception.pose.detected:
-        pts = {lm.name: (int(lm.x * w), int(lm.y * h)) for lm in perception.pose.landmarks}
-        for a, b in _POSE_BONES:
-            if a in pts and b in pts:
-                cv2.line(annotated, pts[a], pts[b], POSE_COLOR, 2, cv2.LINE_AA)
-        for name, pt in pts.items():
-            cv2.circle(annotated, pt, 4, POSE_COLOR, -1, cv2.LINE_AA)
 
     for hand in perception.hands:
         pts = {lm.name: (int(lm.x * w), int(lm.y * h)) for lm in hand.landmarks}

@@ -19,16 +19,16 @@ camera:
 # --- Perception thresholds ---
 perception:
   confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
-  # hand_object_distance_px/hand_object_touch_distance_px are calibrated
-  # against a 640px-wide reference frame (backend/perception/interaction.py
-  # scales them to whatever the camera's *actual* capture width turns out
-  # to be — observed differing from config.yaml's requested resolution).
-  # Real-world debug readout showed genuine touching hands 150-330px apart
-  # at an actual 1920px-wide capture (palm-center landmark approximation is
-  # noisy, not exact contact); these values (scaled x3 at 1920px ->
-  # 450/780px) give generous margin above that observed range.
-  hand_object_distance_px: 260    # HAND_APPROACHING_OBJECT threshold, at 640px reference width
-  hand_object_touch_distance_px: 150  # HAND_TOUCHING_OBJECT threshold, at 640px reference width
+  # PICK/PLACE is detected from the object's own movement, not hand
+  # proximity (backend/perception/interaction.py — hand-tracking proved
+  # too unreliable in real testing to drive detection directly). This is
+  # the displacement, at a 640px-wide reference frame, that counts as a
+  # genuine move rather than detection jitter; scaled to the camera's
+  # *actual* capture width, which often differs from the resolution
+  # requested above. Raise it if a stationary box's own detection jitter
+  # ever gets mistaken for a pick; lower it if a real, deliberate lift
+  # isn't registering.
+  movement_threshold_px: 28        # at 640px reference width
   min_box_contour_area: 800       # ignore color-noise smaller than this
 
   # Legacy v1 single-area field — ColorBoxDetector always emits it, but

@@ -1,0 +1,50 @@
+{
+  "experiment_id": "V2_YOLO_OBJECTS_001",
+  "name": "General Object Placement Demo (v2.0, YOLO)",
+  "description": "Pick up everyday objects recognized by a pretrained general object detector (YOLOv8, no color markers, no custom training) and place each in its own designated zone.",
+  "objects": {
+    "CUP": { "label": "mug", "color_hint": null },
+    "BOTTLE": { "label": "bottle", "color_hint": null },
+    "ZONE_A": { "label": "zone A", "color_hint": null },
+    "ZONE_B": { "label": "zone B", "color_hint": null }
+  },
+  "steps": [
+    {
+      "id": 1,
+      "action": "PICK",
+      "object": "CUP",
+      "instruction": "Pick up the mug.",
+      "voice_next": "Next, place the mug in zone A."
+    },
+    {
+      "id": 2,
+      "action": "PLACE",
+      "object": "CUP",
+      "target": "ZONE_A",
+      "instruction": "Place the mug in zone A.",
+      "voice_next": "Next, pick up the bottle."
+    },
+    {
+      "id": 3,
+      "action": "PICK",
+      "object": "BOTTLE",
+      "instruction": "Pick up the bottle.",
+      "voice_next": "Next, place the bottle in zone B."
+    },
+    {
+      "id": 4,
+      "action": "PLACE",
+      "object": "BOTTLE",
+      "target": "ZONE_B",
+      "instruction": "Place the bottle in zone B.",
+      "voice_next": "Experiment completed successfully."
+    },
+    {
+      "id": 5,
+      "action": "COMPLETE",
+      "object": "EXPERIMENT",
+      "instruction": "Close out the experiment.",
+      "voice_next": "Experiment completed successfully."
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+# ASTRA backend — cloud deployment dependencies (render.yaml).
+#
+# A trimmed subset of requirements.txt for the "no local camera, browser
+# supplies frames over /ws/ingest" cloud deployment (camera.source=browser,
+# detector_backend=hsv — see docs/deployment.md). Deliberately excludes:
+#   - ultralytics (+ torch): only needed for detector_backend=yolo, which
+#     this deployment doesn't use — pulling it in would multi-gigabyte the
+#     build and the runtime memory footprint for nothing (see
+#     backend/perception/real_engine.py's lazy import).
+#   - pyttsx3: needs a local audio backend (espeak et al.) a headless
+#     container doesn't have; voice is disabled for this deployment
+#     (ENABLE_VOICE=false in render.yaml) rather than left to fail.
+#   - pandas / scikit-learn: only used by the offline training pipeline
+#     (training/), never touched by the live demo backend.
+# Keep this in sync with requirements.txt's versions for everything it
+# does share — same runtime, just fewer packages in it.
+
+# --- Web backend ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==13.1
+pydantic==2.9.2
+python-multipart==0.0.9
+PyYAML==6.0.2
+
+# --- Computer vision / perception ---
+opencv-python-headless==4.10.0.84
+mediapipe==0.10.14
+
+# --- Data / utils ---
+numpy==1.26.4

@@ -50,6 +50,20 @@ _PALM_LANDMARKS = {"wrist", "index_mcp", "pinky_mcp"}
 # keeps the *proportional* reach the config values were meant to express.
 _THRESHOLD_REFERENCE_FRAME_WIDTH = 640
 
+# How many *consecutive* frames with zero hands detected anywhere in frame
+# a HELD/MOVING object tolerates before actually releasing. Real-world
+# testing showed MediaPipe's dedicated Hands model dropping detection
+# entirely for a majority of individual frames even while a hand
+# genuinely, continuously gripped an object for 10+ seconds — not just
+# rare isolated flicker. Releasing on the very first such frame (the
+# original fix here) meant almost every real hold got prematurely cut
+# short before the object had even moved, immediately re-requiring a
+# fresh 2-consecutive-frame touch to resume — which, given that same drop
+# rate, routinely never completed either. This tolerates a real gap
+# (roughly half a second at a typical 15-20fps loop) before concluding the
+# hand has actually left, not just that one frame missed it.
+_HAND_ABSENCE_GRACE_FRAMES = 8
+
 
 def bbox_center(bbox: BBox) -> tuple[float, float]:
     return ((bbox.x1 + bbox.x2) / 2.0, (bbox.y1 + bbox.y2) / 2.0)
@@ -62,6 +76,7 @@ def hand_center_px(hand: HandFrame, frame_w: int, frame_h: int) -> tuple[float, 
     x = sum(p.x for p in pts) / len(pts) * frame_w
     y = sum(p.y for p in pts) / len(pts) * frame_h
     return (x, y)
+
 
 
 def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -93,6 +108,9 @@ class _ObjectTrack:
     hand_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
     box_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
     zone: Optional[str] = None
+    # Consecutive frames (this object HELD/MOVING) with zero hands detected
+    # anywhere in frame. See _HAND_ABSENCE_GRACE_FRAMES.
+    no_hand_streak: int = 0
 
 
 def tracked_classes_for(settings: PerceptionSettings) -> list[str]:
@@ -241,6 +259,9 @@ class InteractionReasoner:
             # its state and waits for the hand detector to catch up, same
             # flicker tolerance as the obj-is-None branch above.
             if track.state in (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND):
+                track.no_hand_streak += 1
+                if track.no_hand_streak <= _HAND_ABSENCE_GRACE_FRAMES:
+                    return track.state, None
                 zone_name = zone_overlapping(obj.bbox, zones)
                 if zone_name is not None:
                     return InteractionState.OBJECT_PLACED, zone_name
@@ -248,9 +269,10 @@ class InteractionReasoner:
             if track.state in (InteractionState.HAND_TOUCHING_OBJECT, InteractionState.HAND_APPROACHING_OBJECT):
                 return track.state, None
             if track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED):
-                return track.state, track.zone
+                return self._resting_zone_state(track.state, track.zone, obj.bbox, zones)
             return InteractionState.NONE, None
 
+        track.no_hand_streak = 0
         nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
         distance = _dist(nearest_hand, box_center)
 
@@ -295,7 +317,7 @@ class InteractionReasoner:
             # would otherwise re-trigger it as picked up again every time.
             if point_in_bbox(nearest_hand, obj.bbox):
                 return InteractionState.HAND_TOUCHING_OBJECT, None
-            return track.state, track.zone
+            return self._resting_zone_state(track.state, track.zone, obj.bbox, zones)
 
         if distance <= touch_threshold:
             # Require a HAND_TOUCHING_OBJECT frame before counting the
@@ -312,3 +334,27 @@ class InteractionReasoner:
         if len(track.box_history) < 2:
             return False
         return _dist(track.box_history[0], track.box_history[-1]) > _DISPLACEMENT_NOISE_FLOOR_PX
+
+    @staticmethod
+    def _resting_zone_state(
+        current_state: InteractionState, current_zone: Optional[str], obj_bbox: BBox, zones: list[DetectedObject]
+    ) -> tuple[InteractionState, Optional[str]]:
+        """PLACED/RELEASED + zone for a resting object. RELEASED is
+        re-derived from the object's *current* bbox every frame rather than
+        frozen at the moment it was released — a release caught a frame
+        early (object still settling, or the hand's final position not
+        quite overlapping the zone yet) would otherwise permanently
+        misclassify it as RELEASED even once it's sitting squarely inside
+        the zone in every subsequent frame.
+        PLACED, once reached, is sticky and never auto-reverts, though: a
+        bbox estimate hovering right at a zone's overlap-ratio threshold
+        would otherwise flicker PLACED/RELEASED frame to frame, and the
+        temporal smoother (needs several *consecutive* stable frames) would
+        never accumulate enough of the same candidate to ever confirm the
+        PLACE action — leaving a genuinely, visibly placed object stuck on
+        "observing..." forever. Only a fresh touch (which exits this
+        resting state entirely) resets that."""
+        if current_state == InteractionState.OBJECT_PLACED:
+            return InteractionState.OBJECT_PLACED, current_zone
+        zone_name = zone_overlapping(obj_bbox, zones)
+        return (InteractionState.OBJECT_PLACED, zone_name) if zone_name else (InteractionState.OBJECT_RELEASED, None)

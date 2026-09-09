@@ -107,7 +107,18 @@ class RuleBasedActionRecognizer(ActionRecognizer):
             if obj is not None:
                 self._confidence_windows[cls].append(obj.confidence)
 
-            if event.changed and event.state in _HELD_STATES:
+            if event.state in _HELD_STATES and (event.changed or not self._pick_valid.get(cls, False)):
+                # Re-checked every frame the hold hasn't yet validated, not
+                # just the instant contact began: a hand's first touch is
+                # naturally at the object's resting position, which for an
+                # object whose "neutral" spot happens to overlap a zone
+                # (two boxes on the same small table, or a target zone that
+                # just isn't empty at rest) would otherwise permanently
+                # invalidate the pick before the user has had any chance to
+                # actually lift it clear. Once it does clear every zone,
+                # latched True for the rest of this hold — carrying it back
+                # across a zone mid-motion still can't flip it (module
+                # docstring's original intent for the latch).
                 self._pick_valid[cls] = self._picked_from_outside_zones(obj, zones)
 
             action_key: Optional[str] = None

@@ -20,7 +20,13 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 
 
 class CameraSettings(BaseModel):
-    source: Literal["webcam", "video_file", "synthetic"] = "synthetic"
+    # "browser": no local capture device at all — frames arrive pushed over
+    # /ws/ingest from a client's own getUserMedia camera (see
+    # backend/services/browser_frame_source.py). For a cloud deployment
+    # with no camera attached to the server itself, letting the visiting
+    # browser supply its own webcam frames instead of the backend reading
+    # a local device.
+    source: Literal["webcam", "video_file", "synthetic", "browser"] = "synthetic"
     camera_index: int = 0
     frame_width: int = 1280
     frame_height: int = 720

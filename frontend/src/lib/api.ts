@@ -8,6 +8,12 @@ export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 export const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/live";
+// Camera-frame *upload* socket — only used when the backend's
+// camera.source is "browser" (a cloud deployment with no local capture
+// device of its own; see backend/websocket/ingest.py). Derived from
+// WS_URL rather than a separate env var so the two sockets can't
+// accidentally point at different hosts.
+export const WS_INGEST_URL = WS_URL.replace(/\/ws\/live$/, "/ws/ingest");
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });

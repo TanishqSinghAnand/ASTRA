@@ -19,8 +19,9 @@ from backend.mocks.mock_engines import MockActionRecognizer, MockPerceptionEngin
 from backend.perception.base import ActionPrediction, PerceptionFrame, SequenceEvent
 from backend.perception.interfaces import ActionRecognizer, PerceptionEngine, SequenceEngine
 from backend.perception.real_engine import RealPerceptionEngine
+from backend.services.browser_frame_source import BrowserFrameSource
 from backend.services.camera_service import CameraError, CameraService
-from backend.services.frame_utils import encode_frame_jpeg_b64
+from backend.services.frame_utils import decode_frame_jpeg_bytes, encode_frame_jpeg_b64
 from backend.services.logging_service import LoggingService
 from backend.services.overlay import draw_perception_overlay
 from backend.services.recording_service import RecordingService
@@ -44,7 +45,13 @@ class InferenceService:
         self.experiment = experiment
         self.repo_root = repo_root
 
-        self.camera = CameraService(settings.camera, repo_root)
+        # "browser" has no local capture device to read — frames arrive
+        # pushed from a connected client's own camera instead (see
+        # push_browser_frame() below and backend/websocket/ingest.py). Both
+        # this and CameraService expose the same start/stop/read_latest/
+        # is_running/measured_fps shape, so the two loops below don't need
+        # to know which one they're holding.
+        self.camera = BrowserFrameSource() if settings.camera.source == "browser" else CameraService(settings.camera, repo_root)
         if settings.features.use_mock_engines:
             self.perception: PerceptionEngine = MockPerceptionEngine()
             self.action_recognizer: ActionRecognizer = MockActionRecognizer()
@@ -147,6 +154,19 @@ class InferenceService:
         self.latest_prediction = None
         self.error_message = None
         self.status = "IDLE"
+
+    # -- browser camera ingest (camera.source == "browser") ------------------
+
+    def push_browser_frame(self, data: bytes) -> None:
+        """Called by /ws/ingest for each incoming JPEG frame from a
+        client's own camera. No-op (rather than an error) when the
+        configured source isn't "browser" — a stray/late client connection
+        shouldn't be able to affect a locally-attached-camera run."""
+        if not isinstance(self.camera, BrowserFrameSource):
+            return
+        frame = decode_frame_jpeg_bytes(data)
+        if frame is not None:
+            self.camera.push_frame(frame)
 
     # -- status / snapshot for REST -----------------------------------------
 

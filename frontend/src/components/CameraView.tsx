@@ -1,3 +1,5 @@
+import type { BrowserCameraStatus } from "@/lib/useBrowserCameraUpload";
+
 interface CameraViewProps {
   frameImage: string | null;
   cameraRunning: boolean;
@@ -5,7 +7,14 @@ interface CameraViewProps {
   fps: number;
   lastAction: string | null;
   lastConfidence: number;
+  browserCameraStatus: BrowserCameraStatus;
 }
+
+const BROWSER_CAMERA_MESSAGES: Record<Exclude<BrowserCameraStatus, "idle" | "streaming">, string> = {
+  requesting: "Requesting camera access — check for a browser permission prompt.",
+  denied: "Camera access was denied. Allow camera permission for this site and press Start again.",
+  unavailable: "No camera available in this browser (needs HTTPS and a device with a camera).",
+};
 
 export function CameraView({
   frameImage,
@@ -14,7 +23,14 @@ export function CameraView({
   fps,
   lastAction,
   lastConfidence,
+  browserCameraStatus,
 }: CameraViewProps) {
+  const isBrowserSource = cameraSource === "browser";
+  const browserIssue =
+    isBrowserSource && browserCameraStatus !== "idle" && browserCameraStatus !== "streaming"
+      ? BROWSER_CAMERA_MESSAGES[browserCameraStatus]
+      : null;
+
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)]">
       <div className="relative aspect-video w-full bg-black">
@@ -29,10 +45,15 @@ export function CameraView({
             className="h-full w-full object-contain"
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[var(--color-text-faint)]">
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-6 text-center text-[var(--color-text-faint)]">
             <span className="font-mono text-sm">
-              {cameraRunning ? "WAITING FOR FIRST FRAME..." : "CAMERA IDLE"}
+              {browserIssue ?? (cameraRunning ? "WAITING FOR FIRST FRAME..." : "CAMERA IDLE")}
             </span>
+            {isBrowserSource && !browserIssue && cameraRunning && (
+              <span className="font-mono text-xs">
+                Using this browser&apos;s own camera — allow access if prompted.
+              </span>
+            )}
           </div>
         )}
 

@@ -71,9 +71,14 @@ def main() -> None:
     parser.add_argument("--index", type=int, default=None, help="Camera index (webcam source)")
     parser.add_argument("--path", type=str, default=None, help="Video file path (video_file source)")
     parser.add_argument("--display-width", type=int, default=DEFAULT_DISPLAY_MAX_WIDTH)
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to a config.yaml variant (default: config/config.yaml). "
+             "E.g. config/config.yolo.yaml for the YOLO cup/bottle setup.",
+    )
     args = parser.parse_args()
 
-    settings = load_settings()
+    settings = load_settings(args.config)
     overrides: dict = {}
     if args.source:
         overrides["source"] = args.source

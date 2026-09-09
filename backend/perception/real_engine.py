@@ -12,7 +12,6 @@ from backend.perception.base import PerceptionFrame
 from backend.perception.color_detector import ColorBoxDetector
 from backend.perception.hands import HandEstimator
 from backend.perception.interfaces import PerceptionEngine
-from backend.perception.object_detector import ObjectDetector
 from backend.perception.pose import PoseEstimator
 from backend.perception.zones import zone_objects
 
@@ -20,7 +19,17 @@ from backend.perception.zones import zone_objects
 class RealPerceptionEngine(PerceptionEngine):
     def __init__(self, settings: PerceptionSettings):
         self.settings = settings
-        self.detector = ObjectDetector(settings) if settings.detector_backend == "yolo" else ColorBoxDetector(settings)
+        if settings.detector_backend == "yolo":
+            # Deliberately lazy: object_detector.py imports ultralytics,
+            # which pulls in torch — a real weight/memory jump nothing
+            # else here needs. A deployment running detector_backend=hsv
+            # (e.g. the cloud demo, see render.yaml) shouldn't pay that
+            # cost just because this module got imported.
+            from backend.perception.object_detector import ObjectDetector
+
+            self.detector = ObjectDetector(settings)
+        else:
+            self.detector = ColorBoxDetector(settings)
         self.pose = PoseEstimator()
         self.hands = HandEstimator()
 

@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { ERROR_STATUSES } from "@/lib/types";
 import type { ExperimentDefinition, LiveMessage, SequenceEvent, StatusDict } from "@/lib/types";
 import { useLiveSocket } from "@/lib/useLiveSocket";
+import { useBrowserCameraUpload } from "@/lib/useBrowserCameraUpload";
 import { Header } from "./Header";
 import { CameraView } from "./CameraView";
 import { StepChecklist } from "./StepChecklist";
@@ -61,6 +62,13 @@ export function Dashboard() {
   }, []);
 
   const { connected } = useLiveSocket(handleMessage);
+
+  // Only relevant when the backend has no local camera of its own
+  // (camera.source == "browser", set for a cloud deployment) — otherwise
+  // this is a no-op and getUserMedia is never even requested.
+  const { status: browserCameraStatus } = useBrowserCameraUpload(
+    status?.camera_source === "browser" && status?.status === "RUNNING",
+  );
 
   // Initial REST seed — the experiment definition + past event log (per
   // spec: "seeded from GET /api/experiment/log and appended live from
@@ -123,6 +131,7 @@ export function Dashboard() {
             fps={status?.fps ?? 0}
             lastAction={lastAction}
             lastConfidence={lastConfidence}
+            browserCameraStatus={browserCameraStatus}
           />
         </div>
 

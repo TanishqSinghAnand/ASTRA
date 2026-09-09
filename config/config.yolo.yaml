@@ -1,0 +1,70 @@
+# ASTRA — YOLO variant config (cup/bottle, no color markers needed).
+#
+# This is config.yaml's sibling for the pretrained-object-detection path —
+# same interaction/zone logic, different detector_backend. The default
+# config.yaml uses HSV black/red boxes instead (touch/place detection
+# proved more reliable there — see its detector_backend comment); this file
+# is kept so the YOLO path stays runnable on demand:
+#   python tools/live_demo.py --config config/config.yolo.yaml --source webcam --index 0
+
+# --- Camera / video input ---
+camera:
+  source: synthetic
+  camera_index: 0
+  frame_width: 1280
+  frame_height: 720
+  target_fps: 30
+  video_file_path: "data/recordings/demo_clip.mp4"
+
+# --- Perception thresholds ---
+perception:
+  confidence_threshold: 0.60
+  hand_object_distance_px: 260    # HAND_APPROACHING_OBJECT threshold, at 640px reference width
+  hand_object_touch_distance_px: 150  # HAND_TOUCHING_OBJECT threshold, at 640px reference width
+  min_box_contour_area: 800
+
+  experiment_area: [0.0, 0.0, 0.0, 0.0]  # unused by v2.0 (target_zones below)
+
+  colors: {}  # unused — detector_backend: yolo below
+
+  # --- v2.0: general object detection ---
+  detector_backend: yolo
+  yolo_model: yolov8n.pt          # downloads once on first use, cached after
+  yolo_confidence_threshold: 0.35
+  yolo_imgsz: 320
+  yolo_classes:                    # COCO class names to track (exact names YOLO uses)
+    - cup                          # displayed to the user as "mug" — COCO has no separate mug class
+    - bottle
+
+  # --- v2.0: multiple named placement zones (fraction-of-frame [x1,y1,x2,y2]) ---
+  target_zones:
+    zone_a: [0.05, 0.55, 0.35, 0.85]
+    zone_b: [0.65, 0.55, 0.95, 0.85]
+
+# --- Temporal smoothing / hysteresis ---
+temporal:
+  action_stability_frames: 6
+  min_confidence_duration_ms: 300
+
+# --- Feature flags ---
+features:
+  enable_voice: true
+  enable_recording: true
+  enable_streaming: false
+  demo_mode: true
+  use_mock_engines: false
+
+# --- Inference device ---
+model_device: auto
+
+# --- Paths ---
+paths:
+  experiment_config: "experiments/v2_yolo_objects.json"
+  recordings_dir: "data/recordings"
+  reports_dir: "data/reports"
+  raw_data_dir: "data/raw"
+
+# --- Backend server ---
+server:
+  host: "0.0.0.0"
+  port: 8000

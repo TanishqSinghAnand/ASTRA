@@ -17,6 +17,7 @@ from backend.api.routes import router as api_router
 from backend.config.settings import REPO_ROOT, get_settings
 from backend.experiment.experiment_loader import ExperimentLoadError, load_experiment
 from backend.services.inference_service import InferenceService
+from backend.websocket.ingest import router as ws_ingest_router
 from backend.websocket.live import router as ws_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
     app.include_router(ws_router)
+    app.include_router(ws_ingest_router)
 
     @app.get("/")
     async def root() -> dict:

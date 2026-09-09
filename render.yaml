@@ -1,0 +1,29 @@
+# Render Blueprint — deploys the ASTRA backend as a persistent Python web
+# service (FastAPI + WebSockets, not serverless — needs a long-running
+# process to hold the inference loop and WS subscriber queues).
+#
+# No local camera exists on this host: camera.source=browser means the
+# visiting dashboard's own browser captures its webcam and streams frames
+# up to /ws/ingest (see backend/websocket/ingest.py) instead of the
+# backend reading a local device. detector_backend is already "hsv" in
+# config/config.yaml (no YOLO/torch — see requirements-cloud.txt).
+#
+# Deploy: https://dashboard.render.com/blueprints -> New Blueprint
+# Instance -> point at this repo/branch. Render reads this file
+# automatically; no manual service configuration needed beyond that.
+services:
+  - type: web
+    name: astra-backend
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements-cloud.txt"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: CAMERA_SOURCE
+        value: browser
+      - key: ENABLE_VOICE
+        value: "false" # no audio device on a headless host
+      - key: ENABLE_RECORDING
+        value: "false" # ephemeral disk on the free tier; nothing reads it back
+      - key: PYTHON_VERSION
+        value: "3.11.9"

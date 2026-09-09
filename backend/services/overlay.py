@@ -1,7 +1,11 @@
-"""Draws perception results onto a frame: object boxes, pose skeleton, hand
-markers. Shared by tools/live_preview.py now and by the WebSocket frame
-stream / recording_service.py once real perception is wired into the
-backend (Phase 9) — annotation logic should only exist once.
+"""Draws perception results onto a frame: object boxes + hand markers.
+Shared by tools/live_preview.py now and by the WebSocket frame stream /
+recording_service.py once real perception is wired into the backend
+(Phase 9) — annotation logic should only exist once.
+
+No pose/body skeleton: this demo runs on a tabletop with the camera fixed
+on the work surface, and nothing in the interaction/action logic ever
+read pose data (see backend/perception/real_engine.py's docstring).
 """
 from __future__ import annotations
 
@@ -19,20 +23,8 @@ _OBJECT_COLORS = {
 # (the original pale grey nearly disappeared against light walls/curtains).
 _EXPERIMENT_AREA_COLOR = (10, 10, 220)  # deep red, BGR
 
-_POSE_BONES = [
-    ("left_shoulder", "right_shoulder"),
-    ("left_shoulder", "left_elbow"),
-    ("left_elbow", "left_wrist"),
-    ("right_shoulder", "right_elbow"),
-    ("right_elbow", "right_wrist"),
-    ("left_shoulder", "left_hip"),
-    ("right_shoulder", "right_hip"),
-    ("left_hip", "right_hip"),
-]
-
 _HAND_BONES = [("wrist", "index_mcp"), ("wrist", "pinky_mcp"), ("index_mcp", "pinky_mcp")]
 
-POSE_COLOR = (58, 217, 203)     # accent cyan, BGR
 HAND_COLOR = (0, 220, 255)      # amber-yellow, BGR
 
 
@@ -61,14 +53,6 @@ def draw_perception_overlay(frame: np.ndarray, perception: PerceptionFrame) -> n
             cv2.rectangle(annotated, p1, p2, color, thickness)
         label = obj.cls if is_area else f"{obj.cls} {obj.confidence:.0%}"
         draw_label(annotated, label, (p1[0], max(22, p1[1] - 10)), color, font_scale=0.7)
-
-    if perception.pose.detected:
-        pts = {lm.name: (int(lm.x * w), int(lm.y * h)) for lm in perception.pose.landmarks}
-        for a, b in _POSE_BONES:
-            if a in pts and b in pts:
-                cv2.line(annotated, pts[a], pts[b], POSE_COLOR, 2, cv2.LINE_AA)
-        for name, pt in pts.items():
-            cv2.circle(annotated, pt, 4, POSE_COLOR, -1, cv2.LINE_AA)
 
     for hand in perception.hands:
         pts = {lm.name: (int(lm.x * w), int(lm.y * h)) for lm in hand.landmarks}

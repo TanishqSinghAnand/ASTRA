@@ -39,8 +39,13 @@ class ColorSpec(BaseModel):
 
 class PerceptionSettings(BaseModel):
     confidence_threshold: float = 0.60
-    hand_object_distance_px: int = 80
-    hand_object_touch_distance_px: int = 40
+    # Displacement (px, at a 640px-wide reference frame — see
+    # backend/perception/interaction.py's _THRESHOLD_REFERENCE_FRAME_WIDTH)
+    # that counts as an object genuinely moving rather than detection
+    # jitter. Drives PICK/PLACE detection directly — interaction.py tracks
+    # each object's own position, not hand proximity (see its module
+    # docstring for why the design changed).
+    movement_threshold_px: float = 28.0
     min_box_contour_area: int = 800
     experiment_area: tuple[float, float, float, float] = (0.55, 0.55, 0.85, 0.85)
     colors: dict[str, ColorSpec] = Field(default_factory=dict)

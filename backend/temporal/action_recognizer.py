@@ -10,18 +10,19 @@ color_detector.py's HSV thresholding (see training/ for the swap-in point
 once one exists).
 
 Action mapping (only PICK/PLACE — this experiment has no other gesture):
-  - While an object is held (OBJECT_BEING_HELD or OBJECT_MOVING_WITH_HAND)
-    AND it was picked up from outside the experiment area, the candidate is
-    "PICK_<CLASS>" (e.g. PICK_RED_BOX) for as long as the hold lasts. The
-    "outside the area" check is latched at the moment the hold begins (not
-    re-checked every frame) so carrying the box across the area's edge
-    mid-motion can't flip the candidate. This mirrors the class naming
-    color_detector.py already uses ("red_box") upper-cased to match
-    ExperimentStep.action_key's convention ("RED_BOX") — no explicit
-    per-object mapping table needed.
-  - While an object sits OBJECT_PLACED (persists until re-touched, per
+  - While an object is OBJECT_BEING_HELD (interaction.py: currently
+    moving), the candidate is "PICK_<CLASS>" (e.g. PICK_RED_BOX) for as
+    long as the motion lasts. No separate "was it picked up from outside
+    the area" validity check — unlike the hand-proximity-based design this
+    replaced, motion itself is unambiguous: an object doesn't move on its
+    own, so any transition into OBJECT_BEING_HELD is a genuine pick,
+    regardless of where the object happened to be resting beforehand.
+    This mirrors the class naming color_detector.py already uses
+    ("red_box") upper-cased to match ExperimentStep.action_key's
+    convention ("RED_BOX") — no explicit per-object mapping table needed.
+  - While an object sits OBJECT_PLACED (persists until it moves again, per
     interaction.py), the candidate is "PLACE_<CLASS>".
-  - OBJECT_RELEASED (dropped outside the area) maps to no action — this
+  - OBJECT_RELEASED (settled outside the area) maps to no action — this
     sample experiment has no "drop"/failure gesture, only PICK/PLACE.
 
 COMPLETE_EXPERIMENT (design decision, per spec): there is no physical
@@ -35,11 +36,11 @@ Phase 5/6 must do with validator.py.
 
 Confidence is a documented heuristic, not a calibrated probability (same
 honesty rule as color_detector.py): it blends the interaction reasoner's
-own certainty — fixed high, since crossing a hard distance/displacement
-threshold is a deterministic geometric signal, not a probabilistic one —
-with the HSV detector's confidence for that object, averaged over a small
-rolling window (which genuinely varies with lighting/blob quality and is
-the more informative half of the blend).
+own certainty — fixed high, since crossing the movement threshold is a
+deterministic geometric signal, not a probabilistic one — with the HSV
+detector's confidence for that object, averaged over a small rolling
+window (which genuinely varies with lighting/blob quality and is the more
+informative half of the blend).
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ from typing import Callable, Optional
 
 from backend.config.settings import PerceptionSettings, TemporalSettings
 from backend.perception.base import ActionPrediction, InteractionState, PerceptionFrame
-from backend.perception.interaction import InteractionReasoner, area_overlapping
+from backend.perception.interaction import InteractionReasoner
 from backend.perception.interfaces import ActionRecognizer
 from backend.temporal.temporal_smoother import TemporalSmoother
 
@@ -56,8 +57,6 @@ from backend.temporal.temporal_smoother import TemporalSmoother
 # blended confidence score — see module docstring.
 INTERACTION_CERTAINTY = 0.90
 _CONFIDENCE_WINDOW_LEN = 10
-
-_HELD_STATES = (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND)
 
 
 class RuleBasedActionRecognizer(ActionRecognizer):
@@ -77,22 +76,23 @@ class RuleBasedActionRecognizer(ActionRecognizer):
         self._confidence_windows: dict[str, deque[float]] = {
             cls: deque(maxlen=_CONFIDENCE_WINDOW_LEN) for cls in self._tracked_classes
         }
-        # Latched per-class: was the hold currently in progress picked up
-        # from outside the experiment area? Decided once, at the frame the
-        # hold begins — see module docstring.
-        self._pick_valid: dict[str, bool] = {}
+        # Per-class InteractionEvent from the most recent update() call —
+        # introspection for callers that want to show *why* (tools/
+        # live_preview.py's debug HUD), not read by any recognition logic
+        # here.
+        self.last_events: dict[str, object] = {}
 
     def reset(self) -> None:
         self.reasoner.reset()
         self.smoother.reset()
         for window in self._confidence_windows.values():
             window.clear()
-        self._pick_valid.clear()
+        self.last_events = {}
 
     def update(self, perception_frame: PerceptionFrame) -> ActionPrediction:
         events = self.reasoner.update(perception_frame)
+        self.last_events = events
         objects_by_class = {obj.cls: obj for obj in perception_frame.objects}
-        experiment_area = objects_by_class.get("experiment_area")
 
         candidate_key: Optional[str] = None
         candidate_conf = 0.0
@@ -102,21 +102,8 @@ class RuleBasedActionRecognizer(ActionRecognizer):
             if obj is not None:
                 self._confidence_windows[cls].append(obj.confidence)
 
-            if event.state in _HELD_STATES and (event.changed or not self._pick_valid.get(cls, False)):
-                # Re-checked every frame the hold hasn't yet validated, not
-                # just the instant contact began: a hand's first touch is
-                # naturally at the object's resting position, which for an
-                # object whose "neutral" spot happens to overlap the area
-                # would otherwise permanently invalidate the pick before the
-                # user has had any chance to actually lift it clear. Once it
-                # does clear the area, latched True for the rest of this
-                # hold — carrying it back across the area's edge mid-motion
-                # still can't flip it (module docstring's original intent
-                # for the latch).
-                self._pick_valid[cls] = self._picked_from_outside_area(obj, experiment_area)
-
             action_key: Optional[str] = None
-            if event.state in _HELD_STATES and self._pick_valid.get(cls, True):
+            if event.state == InteractionState.OBJECT_BEING_HELD:
                 action_key = f"PICK_{cls.upper()}"
             elif event.state == InteractionState.OBJECT_PLACED:
                 action_key = f"PLACE_{cls.upper()}"
@@ -128,12 +115,6 @@ class RuleBasedActionRecognizer(ActionRecognizer):
         return self.smoother.update(candidate_key, candidate_conf)
 
     # -- internals -----------------------------------------------------------
-
-    @staticmethod
-    def _picked_from_outside_area(obj, experiment_area) -> bool:
-        if obj is None or experiment_area is None:
-            return True
-        return not area_overlapping(obj.bbox, experiment_area.bbox)
 
     def _combined_confidence(self, cls: str) -> float:
         window = self._confidence_windows.get(cls)

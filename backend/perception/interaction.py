@@ -1,20 +1,31 @@
-"""Hand-object interaction reasoning (Phase 3).
+"""Object-motion interaction reasoning (Phase 3; redesigned to
+motion-based tracking after real-camera testing).
 
-Still perception, not experiment logic: this module only answers "is a hand
-approaching/touching/holding/placing an object?" for each tracked box. It
-knows nothing about PICK/PLACE experiment steps or the sequence — Phase 4
-(backend/temporal/) is what turns an InteractionState transition into an
-action_key like "PICK_RED_BOX".
+Still perception, not experiment logic: this module only answers "is this
+object currently being carried, or resting inside the experiment area?"
+for each tracked box. It knows nothing about PICK/PLACE experiment steps
+or the sequence — Phase 4 (backend/temporal/) is what turns an
+InteractionState transition into an action_key like "PICK_RED_BOX".
 
-Units: MediaPipe hand landmarks are normalized (0-1 of frame size);
-DetectedObject bboxes from color_detector.py are already pixel-space. Both
-are needed in the same units to compare, which is why this reads
-PerceptionFrame.frame_width/frame_height (see base.py) rather than assuming
-a fixed resolution.
+Design note — why motion, not hand proximity: the original design (see
+git history) inferred PICK/PLACE from hand-to-object distance, using
+MediaPipe's dedicated Hands model to locate the hand each frame. Real-
+camera testing showed that model dropping detection entirely on a
+majority of individual frames even during a continuous, genuine grip —
+not rare flicker — which no amount of threshold tuning or gap-tolerance
+patching made reliably solvable, because the signal it depended on simply
+wasn't there most frames. The color detector, by contrast, was rock solid
+throughout that same testing. So: track the *object's own position*
+instead. A PICK is the object transitioning from resting to moving; a
+PLACE is it coming back to rest inside the experiment area. Hand
+landmarks are computed only for the on-screen overlay now (see
+backend/services/overlay.py) — nothing here reads them.
 
-Hand position is approximated as the average of wrist + index_mcp +
-pinky_mcp (hands.py's own "palm-center" landmark set) — fingertips are too
-noisy for distance-based reasoning.
+Units: DetectedObject bboxes from color_detector.py are pixel-space;
+frame.frame_width/frame_height (see base.py) is used only to scale the
+movement threshold proportionally to actual capture resolution (a real
+webcam frequently delivers a different resolution than config.yaml
+requested).
 """
 from __future__ import annotations
 
@@ -25,41 +36,21 @@ from typing import Optional
 from backend.config.settings import PerceptionSettings
 from backend.perception.base import BBox, DetectedObject, HandFrame, InteractionState, PerceptionFrame
 
-# Per-frame box displacement below this (pixels) is treated as detection/
-# hand jitter, not the box actually moving with the hand.
-_DISPLACEMENT_NOISE_FLOOR_PX = 6.0
+# How many of the most recent box-center samples must all sit within
+# move_threshold of each other to confirm the object has come to rest.
+# Deliberately short: a long window would keep comparing against a stale
+# sample from mid-motion for many frames after the object actually
+# stopped, delaying "placed" detection long after it visibly settled.
+_STILL_WINDOW = 3
 
-# How many recent (hand, box) position samples to correlate when deciding
-# whether a held object is actively moving.
-_HISTORY_LEN = 8
-
-_PALM_LANDMARKS = {"wrist", "index_mcp", "pinky_mcp"}
-
-# hand_object_distance_px/hand_object_touch_distance_px are calibrated
-# against this reference frame width (matches the hand-constructed test
-# fixtures in tests/test_interaction.py, so those keep behaving identically
-# at scale=1.0). A real webcam frequently delivers a different actual
-# resolution than config.yaml's requested camera.frame_width — observed
-# capturing 1920x1080 despite a 1280x720 request — and an absolute
-# threshold tuned for one width is wildly wrong at another (a small "touch"
-# radius is generous at 640px wide, effectively invisible at 1920px wide).
-# Scaling by actual frame_width/this reference keeps the *proportional*
-# reach the config values were meant to express.
+# Reference frame width settings.movement_threshold_px is calibrated
+# against (matches tests/test_interaction.py's fixtures at scale=1.0). A
+# real webcam frequently delivers a different actual resolution than
+# config.yaml's requested camera.frame_width, so this scales the
+# threshold to whatever the camera's *actual* capture width turns out to
+# be — see interaction.py's git history for the same reasoning applied to
+# the old hand-distance thresholds.
 _THRESHOLD_REFERENCE_FRAME_WIDTH = 640
-
-# How many *consecutive* frames with zero hands detected anywhere in frame
-# a HELD/MOVING object tolerates before actually releasing. Real-world
-# testing showed MediaPipe's dedicated Hands model dropping detection
-# entirely for a majority of individual frames even while a hand
-# genuinely, continuously gripped an object for 10+ seconds — not just
-# rare isolated flicker. Releasing on the very first such frame (the
-# original fix here) meant almost every real hold got prematurely cut
-# short before the object had even moved, immediately re-requiring a
-# fresh 2-consecutive-frame touch to resume — which, given that same drop
-# rate, routinely never completed either. This tolerates a real gap
-# (roughly half a second at a typical 15-20fps loop) before concluding the
-# hand has actually left, not just that one frame missed it.
-_HAND_ABSENCE_GRACE_FRAMES = 8
 
 # Fraction of the object's own bbox area that must overlap the experiment
 # area's bbox for the object to count as "placed there". A single point
@@ -71,20 +62,23 @@ _HAND_ABSENCE_GRACE_FRAMES = 8
 # area") far better.
 _AREA_OVERLAP_RATIO = 0.2
 
+_PALM_LANDMARKS = {"wrist", "index_mcp", "pinky_mcp"}
+
 
 def bbox_center(bbox: BBox) -> tuple[float, float]:
     return ((bbox.x1 + bbox.x2) / 2.0, (bbox.y1 + bbox.y2) / 2.0)
 
 
 def hand_center_px(hand: HandFrame, frame_w: int, frame_h: int) -> tuple[float, float] | None:
+    """Kept for the on-screen overlay/debug HUD only (tools/live_preview.py,
+    backend/services/overlay.py) — no longer read by any interaction
+    logic in this module. See the module docstring for why."""
     pts = [lm for lm in hand.landmarks if lm.name in _PALM_LANDMARKS]
     if len(pts) < len(_PALM_LANDMARKS):
         return None
     x = sum(p.x for p in pts) / len(pts) * frame_w
     y = sum(p.y for p in pts) / len(pts) * frame_h
     return (x, y)
-
-
 
 
 def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -110,8 +104,7 @@ def _bbox_intersection_area(a: BBox, b: BBox) -> float:
 
 def area_overlapping(obj_bbox: BBox, area_bbox: Optional[BBox]) -> bool:
     """Does obj_bbox substantially overlap area_bbox (>= _AREA_OVERLAP_RATIO
-    of the object's own area)? Public — also used by action_recognizer.py's
-    pick-validity check, for the same reason."""
+    of the object's own area)?"""
     if area_bbox is None:
         return False
     obj_area = _bbox_area(obj_bbox)
@@ -132,15 +125,20 @@ class InteractionEvent:
 @dataclass
 class _ObjectTrack:
     state: InteractionState = InteractionState.NONE
-    hand_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
-    box_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
-    # Consecutive frames (this object HELD/MOVING) with zero hands detected
-    # anywhere in frame. See _HAND_ABSENCE_GRACE_FRAMES.
-    no_hand_streak: int = 0
+    # Last _STILL_WINDOW positions — used only to detect settling back to
+    # rest while currently held (short on purpose, see _STILL_WINDOW).
+    recent: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_STILL_WINDOW))
+    # The object's last confirmed-resting position — the reference point a
+    # fresh pick's displacement is measured against. Unlike `recent`, this
+    # doesn't age out of a sliding window, so a slow, deliberate lift over
+    # many small-per-frame steps still accumulates a real displacement
+    # from it instead of only ever being compared to a few frames ago.
+    anchor: Optional[tuple[float, float]] = None
 
 
 class InteractionReasoner:
-    """Maintains per-object InteractionState across frames.
+    """Maintains per-object InteractionState across frames, purely from
+    each tracked object's own position history.
 
     Tracked object classes are read from settings.colors (i.e. whatever
     color_detector.py is configured to detect — "red_box"/"blue_box" for the
@@ -167,22 +165,12 @@ class InteractionReasoner:
 
         objects_by_class = {obj.cls: obj for obj in frame.objects}
         experiment_area = objects_by_class.get("experiment_area")
-        hand_centers = [
-            c
-            for h in frame.hands
-            if (c := hand_center_px(h, frame.frame_width, frame.frame_height)) is not None
-        ]
-
-        scale = frame.frame_width / _THRESHOLD_REFERENCE_FRAME_WIDTH
-        touch_threshold = self.settings.hand_object_touch_distance_px * scale
-        approach_threshold = self.settings.hand_object_distance_px * scale
+        move_threshold = self.settings.movement_threshold_px * (frame.frame_width / _THRESHOLD_REFERENCE_FRAME_WIDTH)
 
         events: dict[str, InteractionEvent] = {}
         for cls in self._tracked_classes:
             track = self._tracks[cls]
-            new_state = self._update_track(
-                track, objects_by_class.get(cls), hand_centers, experiment_area, touch_threshold, approach_threshold
-            )
+            new_state = self._update_track(track, objects_by_class.get(cls), experiment_area, move_threshold)
             changed = new_state != track.state
             track.state = new_state
             events[cls] = InteractionEvent(object_class=cls, state=new_state, changed=changed)
@@ -194,119 +182,53 @@ class InteractionReasoner:
         self,
         track: _ObjectTrack,
         obj: DetectedObject | None,
-        hand_centers: list[tuple[float, float]],
         experiment_area: DetectedObject | None,
-        touch_threshold: float,
-        approach_threshold: float,
+        move_threshold: float,
     ) -> InteractionState:
-        # MediaPipe's hand detector flickers frame-to-frame in practice (a
-        # real capture routinely shows several consecutive "no hand"
-        # frames interleaved with good detections, even while a hand is
-        # genuinely resting on/near the object) — so a single dropped
-        # detection must not discard in-progress engagement (touching or
-        # approaching), or a pick can never accumulate the two consecutive
-        # touching frames it needs to promote to HELD.
-        _GAP_TOLERANT_STATES = (
-            InteractionState.OBJECT_BEING_HELD,
-            InteractionState.OBJECT_MOVING_WITH_HAND,
-            InteractionState.HAND_TOUCHING_OBJECT,
-            InteractionState.HAND_APPROACHING_OBJECT,
-        )
-
         if obj is None:
-            # The object itself wasn't detected this frame — most often a
-            # hand closing around it occludes its own color blob. Don't
-            # spontaneously release just because of a missing detection;
-            # hold the state and wait for the next real observation of the
-            # object.
-            if track.state in _GAP_TOLERANT_STATES:
-                return track.state
-            if track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED):
-                return track.state
-            return InteractionState.NONE
+            # Not detected this frame — most often a hand briefly occluding
+            # it mid-carry, or a momentary detector miss. Hold the last
+            # known state rather than resetting; the object hasn't been
+            # observed to have actually changed.
+            return track.state
 
         box_center = bbox_center(obj.bbox)
+        track.recent.append(box_center)
+        if track.anchor is None:
+            track.anchor = box_center
 
-        if not hand_centers:
-            # The object IS clearly visible here — unlike the occlusion case
-            # above — but no hand exists anywhere in frame this frame. Only
-            # an already-HELD/MOVING object should actually release (the
-            # hand genuinely moved away, e.g. out of the camera's view after
-            # placing it) — a merely touching/approaching object just keeps
-            # its state and waits for the hand detector to catch up, same
-            # flicker tolerance as the obj-is-None branch above.
-            if track.state in (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND):
-                track.no_hand_streak += 1
-                if track.no_hand_streak <= _HAND_ABSENCE_GRACE_FRAMES:
-                    return track.state
-                if area_overlapping(obj.bbox, experiment_area.bbox if experiment_area else None):
-                    return InteractionState.OBJECT_PLACED
-                return InteractionState.OBJECT_RELEASED
-            if track.state in (InteractionState.HAND_TOUCHING_OBJECT, InteractionState.HAND_APPROACHING_OBJECT):
-                return track.state
-            if track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED):
-                return self._resting_state(track.state, obj.bbox, experiment_area)
-            return InteractionState.NONE
-
-        track.no_hand_streak = 0
-        nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
-        distance = _dist(nearest_hand, box_center)
-
-        track.hand_history.append(nearest_hand)
-        track.box_history.append(box_center)
-
-        currently_held = track.state in (
-            InteractionState.OBJECT_BEING_HELD,
-            InteractionState.OBJECT_MOVING_WITH_HAND,
-        )
-        currently_resting = track.state in (
-            InteractionState.OBJECT_RELEASED,
-            InteractionState.OBJECT_PLACED,
-        )
+        currently_held = track.state == InteractionState.OBJECT_BEING_HELD
+        currently_resting = track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED)
 
         if currently_held:
-            if distance <= touch_threshold:
-                return InteractionState.OBJECT_MOVING_WITH_HAND if self._is_moving(track) else InteractionState.OBJECT_BEING_HELD
-            # Hand pulled away while holding -> released, either into the
-            # experiment area (placed) or elsewhere (just dropped/released).
+            if not self._has_settled(track, move_threshold):
+                return InteractionState.OBJECT_BEING_HELD
+            # Just came to rest — this hold's natural end: settled either
+            # into the experiment area (placed) or elsewhere (just
+            # released/dropped). This position becomes the new anchor a
+            # future pick's displacement will be measured against.
+            track.anchor = box_center
             if area_overlapping(obj.bbox, experiment_area.bbox if experiment_area else None):
                 return InteractionState.OBJECT_PLACED
             return InteractionState.OBJECT_RELEASED
 
+        if _dist(box_center, track.anchor) > move_threshold:
+            return InteractionState.OBJECT_BEING_HELD
+
         if currently_resting:
-            # A placed/released object doesn't spontaneously go back to
-            # NONE just because the hand that let go of it moved away — it
-            # physically stays where it was left. Only a hand actually
-            # touching it again restarts the touch/hold cycle; this also
-            # gives Phase 4's temporal smoother something that holds stable
-            # across frames to debounce, instead of a one-frame edge event.
-            #
-            # Reactivation deliberately uses a tighter test than the fresh-
-            # pick path below (hand point literally inside the object's
-            # bbox, not just within the generous touch_threshold radius):
-            # objects placed close together on a real table mean a hand
-            # reaching for a *different* object routinely passes within
-            # touch_threshold of one that's already resting/placed, which
-            # would otherwise re-trigger it as picked up again every time.
-            if point_in_bbox(nearest_hand, obj.bbox):
-                return InteractionState.HAND_TOUCHING_OBJECT
             return self._resting_state(track.state, obj.bbox, experiment_area)
 
-        if distance <= touch_threshold:
-            # Require a HAND_TOUCHING_OBJECT frame before counting the
-            # object as held, so a hand merely brushing past doesn't
-            # register as a pick.
-            if track.state == InteractionState.HAND_TOUCHING_OBJECT:
-                return InteractionState.OBJECT_BEING_HELD
-            return InteractionState.HAND_TOUCHING_OBJECT
-        if distance <= approach_threshold:
-            return InteractionState.HAND_APPROACHING_OBJECT
         return InteractionState.NONE
 
-    def _is_moving(self, track: _ObjectTrack) -> bool:
-        if len(track.box_history) < 2:
+    @staticmethod
+    def _has_settled(track: _ObjectTrack, move_threshold: float) -> bool:
+        """True once the last _STILL_WINDOW observed positions are all
+        close together — i.e. the object has stopped moving, regardless of
+        how it was moving before that window."""
+        if len(track.recent) < _STILL_WINDOW:
             return False
-        return _dist(track.box_history[0], track.box_history[-1]) > _DISPLACEMENT_NOISE_FLOOR_PX
+        newest = track.recent[-1]
+        return all(_dist(p, newest) <= move_threshold for p in track.recent)
 
     @staticmethod
     def _resting_state(
@@ -314,19 +236,17 @@ class InteractionReasoner:
     ) -> InteractionState:
         """PLACED/RELEASED for a resting object. RELEASED is re-derived
         from the object's *current* bbox every frame rather than frozen at
-        the moment it was released — a release caught a frame early
-        (object still settling, or the hand's final position not quite
-        overlapping the area yet) would otherwise permanently misclassify
-        it as RELEASED even once it's sitting squarely inside the area in
-        every subsequent frame.
+        the moment it stopped moving — settling caught a frame early
+        (bbox estimate still stabilizing) would otherwise permanently
+        misclassify it as RELEASED even once it's sitting squarely inside
+        the area in every subsequent frame.
         PLACED, once reached, is sticky and never auto-reverts, though: a
         bbox estimate hovering right at the area's overlap-ratio threshold
         would otherwise flicker PLACED/RELEASED frame to frame, and the
         temporal smoother (needs several *consecutive* stable frames)
         would never accumulate enough of the same candidate to ever
-        confirm the PLACE action — leaving a genuinely, visibly placed
-        object stuck on "observing..." forever. Only a fresh touch (which
-        exits this resting state entirely) resets that."""
+        confirm the PLACE action. Only fresh movement (which exits this
+        resting state entirely) resets that."""
         if current_state == InteractionState.OBJECT_PLACED:
             return InteractionState.OBJECT_PLACED
         if area_overlapping(obj_bbox, experiment_area.bbox if experiment_area else None):

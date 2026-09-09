@@ -62,6 +62,7 @@ class ObjectDetector:
             frame,
             classes=self._class_ids,
             conf=self.settings.yolo_confidence_threshold,
+            imgsz=self.settings.yolo_imgsz,
             verbose=False,
         )
         objects: list[DetectedObject] = []

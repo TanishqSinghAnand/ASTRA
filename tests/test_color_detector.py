@@ -1,13 +1,31 @@
 """Regression tests for the HSV color detector, run against the synthetic
-scene generator (deterministic, known box positions) — no camera needed."""
-from backend.config.settings import load_settings
+scene generator (deterministic, known box positions) — no camera needed.
+
+Uses its own explicit red_box/blue_box PerceptionSettings rather than
+load_settings() (the live config.yaml): this test validates the detector
+against synthetic_scene.py's fixed red/blue rendering specifically, and
+must keep working regardless of which colors the current demo experiment
+is actually configured to track (v2.0 uses black_box/white_box)."""
+from backend.config.settings import ColorSpec, HSVRange, PerceptionSettings
 from backend.perception.color_detector import ColorBoxDetector
 from backend.services.synthetic_scene import BOX_SIZE, generate_frame
 
+_RED_BLUE_SETTINGS = PerceptionSettings(
+    experiment_area=(0.55, 0.55, 0.85, 0.85),
+    colors={
+        "red_box": ColorSpec(
+            ranges=[
+                HSVRange(lower=(0, 120, 70), upper=(10, 255, 255)),
+                HSVRange(lower=(170, 120, 70), upper=(180, 255, 255)),
+            ]
+        ),
+        "blue_box": ColorSpec(ranges=[HSVRange(lower=(100, 110, 60), upper=(128, 255, 255))]),
+    },
+)
+
 
 def _detect(t=2.0, width=1280, height=720):
-    settings = load_settings()
-    detector = ColorBoxDetector(settings.perception)
+    detector = ColorBoxDetector(_RED_BLUE_SETTINGS)
     frame = generate_frame(t, width, height, frame_index=int(t * 30))
     objects = {o.cls: o for o in detector.detect(frame)}
     return objects

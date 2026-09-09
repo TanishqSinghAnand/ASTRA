@@ -29,8 +29,13 @@ from backend.temporal.action_recognizer import RuleBasedActionRecognizer
 
 logger = logging.getLogger("astra.inference")
 
-FRAME_PUSH_INTERVAL_S = 0.15  # ~6-7 fps over the wire is plenty for a status view
-LOOP_HZ = 15
+LOOP_HZ = 15  # inference loop's target cadence — actual rate is capped by
+              # however long perception.process() takes on real hardware
+              # (YOLO in particular — see _inference_loop/_stream_loop split)
+STREAM_HZ = 20  # video stream's own cadence — decoupled from inference
+                # speed (see _stream_loop's docstring for why this matters)
+STREAM_MAX_WIDTH = 640  # downscale before encoding; a live status view
+                         # doesn't need the camera's full capture resolution
 
 
 class InferenceService:
@@ -66,6 +71,7 @@ class InferenceService:
 
         self._subscribers: list[asyncio.Queue] = []
         self._task: asyncio.Task | None = None
+        self._stream_task: asyncio.Task | None = None
 
     # -- pub/sub for the WebSocket layer -----------------------------------
 
@@ -111,13 +117,17 @@ class InferenceService:
         self.voice.start()
         self.logging_service.start_run()
         self.recording.start_run()
-        self._task = asyncio.create_task(self._run_loop())
+        self._task = asyncio.create_task(self._inference_loop())
+        self._stream_task = asyncio.create_task(self._stream_loop())
         logger.info("Inference loop started")
 
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
             self._task = None
+        if self._stream_task is not None:
+            self._stream_task.cancel()
+            self._stream_task = None
         self.camera.stop()
         self.voice.stop()
         self.recording.finalize_run()
@@ -156,16 +166,33 @@ class InferenceService:
             "offline": True,
         }
 
-    # -- main loop ------------------------------------------------------------
+    # -- main loops ------------------------------------------------------------
+    #
+    # Two independent loops, not one: perception.process() is a real,
+    # CPU-bound ML call (MediaPipe pose+hands, plus — v2.0 — YOLO object
+    # detection, the heaviest case) that can take anywhere from ~50ms to
+    # 500ms+ depending on machine load. Doing everything in one loop meant
+    # the *video feed* itself was gated by inference speed — under load the
+    # dashboard's camera view would visibly stutter/lag, because a slow
+    # detection frame blocked the next frame push too. Splitting them means
+    # the raw video stays smooth at its own cadence regardless of how fast
+    # detection is keeping up; the annotation overlay just uses whatever
+    # perception result is most recently available (self.latest_perception),
+    # which under heavy load may trail the video by a frame or two —
+    # imperceptible in practice, and far better than the whole feed freezing.
 
-    async def _run_loop(self) -> None:
-        last_frame_push = 0.0
+    async def _inference_loop(self) -> None:
         try:
             while True:
                 loop_start = time.time()
                 captured = self.camera.read_latest()
                 if captured is not None:
-                    pframe = self.perception.process(captured.frame, captured.frame_index)
+                    # Off the event loop thread: this is the one truly
+                    # expensive call in either loop, and without to_thread
+                    # it would block *all* asyncio activity (including the
+                    # stream loop below, and any other WS/HTTP traffic) for
+                    # its entire duration, not just this loop's own pacing.
+                    pframe = await asyncio.to_thread(self.perception.process, captured.frame, captured.frame_index)
                     self.latest_perception = pframe
                     prediction = self.action_recognizer.update(pframe)
                     self.latest_prediction = prediction
@@ -200,19 +227,6 @@ class InferenceService:
                             self.status = "FINISHED"
                             self.logging_service.finalize_run(finished=True)
 
-                    # Annotated once per processed frame (recording wants
-                    # every frame; the WS push below is throttled, but reuses
-                    # this same annotated image rather than re-drawing it).
-                    annotated = draw_perception_overlay(captured.frame, pframe)
-                    self.recording.write_frame(annotated)
-
-                    if loop_start - last_frame_push >= FRAME_PUSH_INTERVAL_S:
-                        last_frame_push = loop_start
-                        image_b64 = encode_frame_jpeg_b64(annotated)
-                        await self._broadcast(
-                            {"type": "frame", "image": image_b64, "frame_index": captured.frame_index}
-                        )
-
                 elapsed = time.time() - loop_start
                 await asyncio.sleep(max(0.0, (1.0 / LOOP_HZ) - elapsed))
         except asyncio.CancelledError:
@@ -221,3 +235,26 @@ class InferenceService:
             logger.exception("Inference loop crashed")
             self.status = "ERROR"
             self.error_message = "Inference loop encountered an unexpected error."
+
+    async def _stream_loop(self) -> None:
+        try:
+            while True:
+                loop_start = time.time()
+                captured = self.camera.read_latest()
+                if captured is not None:
+                    pframe = self.latest_perception
+                    annotated = draw_perception_overlay(captured.frame, pframe) if pframe is not None else captured.frame
+                    self.recording.write_frame(annotated)
+                    image_b64 = encode_frame_jpeg_b64(annotated, max_width=STREAM_MAX_WIDTH)
+                    await self._broadcast(
+                        {"type": "frame", "image": image_b64, "frame_index": captured.frame_index}
+                    )
+
+                elapsed = time.time() - loop_start
+                await asyncio.sleep(max(0.0, (1.0 / STREAM_HZ) - elapsed))
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # pragma: no cover - defensive: never crash the app
+            logger.exception("Stream loop crashed")
+            self.status = "ERROR"
+            self.error_message = "Video stream loop encountered an unexpected error."

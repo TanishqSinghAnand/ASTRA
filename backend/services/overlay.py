@@ -30,7 +30,9 @@ _OBJECT_COLORS = {
     "experiment_area": (150, 150, 150),
 }
 
-_ZONE_FALLBACK_COLOR = (170, 170, 170)
+# Bold, dark-saturated — legible against typical light/indoor backgrounds
+# (the original pale grey nearly disappeared against light walls/curtains).
+_ZONE_FALLBACK_COLOR = (10, 10, 220)  # deep red, BGR
 
 
 def _is_zone(obj_confidence: float) -> bool:
@@ -40,12 +42,22 @@ def _is_zone(obj_confidence: float) -> bool:
 @lru_cache(maxsize=128)
 def _color_for_class(cls: str) -> tuple[int, int, int]:
     """Deterministic (crc32, not Python's randomized hash() — stable
-    across process restarts, not just within one), reasonably saturated
-    BGR color from a class name — used only when `cls` isn't in
-    _OBJECT_COLORS above."""
+    across process restarts, not just within one) BGR color from a class
+    name — used only when `cls` isn't in _OBJECT_COLORS above. Value/
+    saturation pinned high (not just hue-random) so every generated color
+    stays bold and legible rather than occasionally landing on something
+    pale."""
     hue = (zlib.crc32(cls.encode()) % 360) / 360.0
-    r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.85)
     return (int(b * 255), int(g * 255), int(r * 255))
+
+
+def draw_label(img: np.ndarray, text: str, org: tuple[int, int], color, font_scale: float = 0.65, thickness: int = 2) -> None:
+    """Text with a black outline behind it — legible against any
+    background brightness, not just ones the foreground color happens to
+    contrast with. Used for every label this module draws."""
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness, cv2.LINE_AA)
 
 _POSE_BONES = [
     ("left_shoulder", "right_shoulder"),
@@ -74,14 +86,13 @@ def draw_perception_overlay(frame: np.ndarray, perception: PerceptionFrame) -> n
         color = _OBJECT_COLORS.get(obj.cls) or (_ZONE_FALLBACK_COLOR if zone else _color_for_class(obj.cls))
         p1 = (int(obj.bbox.x1), int(obj.bbox.y1))
         p2 = (int(obj.bbox.x2), int(obj.bbox.y2))
-        thickness = 1 if zone else 2
+        thickness = 2 if zone else 3
         if zone:
             _dashed_rect(annotated, p1, p2, color, thickness)
         else:
             cv2.rectangle(annotated, p1, p2, color, thickness)
         label = obj.cls if zone else f"{obj.cls} {obj.confidence:.0%}"
-        cv2.putText(annotated, label, (p1[0], max(15, p1[1] - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        draw_label(annotated, label, (p1[0], max(22, p1[1] - 10)), color, font_scale=0.7)
 
     if perception.pose.detected:
         pts = {lm.name: (int(lm.x * w), int(lm.y * h)) for lm in perception.pose.landmarks}
@@ -99,8 +110,7 @@ def draw_perception_overlay(frame: np.ndarray, perception: PerceptionFrame) -> n
         if "wrist" in pts:
             cv2.circle(annotated, pts["wrist"], 6, HAND_COLOR, -1, cv2.LINE_AA)
             label = hand.handedness or "hand"
-            cv2.putText(annotated, label, (pts["wrist"][0] + 8, pts["wrist"][1] - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, HAND_COLOR, 1, cv2.LINE_AA)
+            draw_label(annotated, label, (pts["wrist"][0] + 8, pts["wrist"][1] - 8), HAND_COLOR, font_scale=0.6)
         for tip_name in ("thumb_tip", "index_tip"):
             if tip_name in pts:
                 cv2.circle(annotated, pts[tip_name], 3, HAND_COLOR, -1, cv2.LINE_AA)

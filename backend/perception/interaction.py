@@ -38,6 +38,18 @@ _HISTORY_LEN = 8
 
 _PALM_LANDMARKS = {"wrist", "index_mcp", "pinky_mcp"}
 
+# hand_object_distance_px/hand_object_touch_distance_px are absolute pixel
+# values, calibrated against this reference frame width (matches the
+# hand-constructed test fixtures in tests/test_interaction.py, so those
+# keep behaving identically at scale=1.0). A real webcam frequently
+# delivers a different actual resolution than config.yaml's requested
+# camera.frame_width — observed capturing 1920x1080 despite a 1280x720
+# request — and an absolute threshold tuned for one width is wildly wrong
+# at another (a 90px "touch" radius is generous at 640px wide, effectively
+# invisible at 1920px wide). Scaling by actual frame_width/this reference
+# keeps the *proportional* reach the config values were meant to express.
+_THRESHOLD_REFERENCE_FRAME_WIDTH = 640
+
 
 def bbox_center(bbox: BBox) -> tuple[float, float]:
     return ((bbox.x1 + bbox.x2) / 2.0, (bbox.y1 + bbox.y2) / 2.0)
@@ -91,11 +103,43 @@ def tracked_classes_for(settings: PerceptionSettings) -> list[str]:
     return list(settings.colors.keys())
 
 
-def _zone_containing(point: tuple[float, float], zones: list[DetectedObject]) -> Optional[str]:
+# Fraction of the object's own bbox area that must overlap a zone's bbox
+# for the object to count as "placed there". A single point test (center
+# or base) is fragile against real-camera perspective: an object's actual
+# footprint on the table routinely doesn't line up pixel-perfectly with a
+# zone rectangle calibrated ahead of time, especially near a zone's edge
+# or with the camera at an angle. Overlap area matches the physical
+# intuition ("is the object sitting over the marked zone") far better.
+_ZONE_OVERLAP_RATIO = 0.2
+
+
+def _bbox_area(bbox: BBox) -> float:
+    return max(0.0, bbox.x2 - bbox.x1) * max(0.0, bbox.y2 - bbox.y1)
+
+
+def _bbox_intersection_area(a: BBox, b: BBox) -> float:
+    ix1, iy1 = max(a.x1, b.x1), max(a.y1, b.y1)
+    ix2, iy2 = min(a.x2, b.x2), min(a.y2, b.y2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    return (ix2 - ix1) * (iy2 - iy1)
+
+
+def zone_overlapping(obj_bbox: BBox, zones: list[DetectedObject]) -> Optional[str]:
+    """Which settings.target_zones key obj_bbox substantially overlaps
+    (>= _ZONE_OVERLAP_RATIO of its own area), or None. Public — also used
+    by action_recognizer.py's pick-validity check, for the same reason."""
+    obj_area = _bbox_area(obj_bbox)
+    if obj_area <= 0:
+        return None
+    best_zone: Optional[str] = None
+    best_ratio = _ZONE_OVERLAP_RATIO
     for zone in zones:
-        if point_in_bbox(point, zone.bbox):
-            return zone.cls
-    return None
+        ratio = _bbox_intersection_area(obj_bbox, zone.bbox) / obj_area
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_zone = zone.cls
+    return best_zone
 
 
 class InteractionReasoner:
@@ -133,10 +177,16 @@ class InteractionReasoner:
             if (c := hand_center_px(h, frame.frame_width, frame.frame_height)) is not None
         ]
 
+        scale = frame.frame_width / _THRESHOLD_REFERENCE_FRAME_WIDTH
+        touch_threshold = self.settings.hand_object_touch_distance_px * scale
+        approach_threshold = self.settings.hand_object_distance_px * scale
+
         events: dict[str, InteractionEvent] = {}
         for cls in self._tracked_classes:
             track = self._tracks[cls]
-            new_state, new_zone = self._update_track(track, objects_by_class.get(cls), hand_centers, zones)
+            new_state, new_zone = self._update_track(
+                track, objects_by_class.get(cls), hand_centers, zones, touch_threshold, approach_threshold
+            )
             changed = new_state != track.state
             track.state = new_state
             track.zone = new_zone
@@ -151,25 +201,61 @@ class InteractionReasoner:
         obj: DetectedObject | None,
         hand_centers: list[tuple[float, float]],
         zones: list[DetectedObject],
+        touch_threshold: float,
+        approach_threshold: float,
     ) -> tuple[InteractionState, Optional[str]]:
-        if obj is None or not hand_centers:
-            # A held/moving object doesn't spontaneously release just
-            # because one frame had no detection (a hand closing around a
-            # box routinely occludes its own color blob) — hold the state
-            # and wait for the next real observation.
-            if track.state in (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND):
+        # MediaPipe's hand detector flickers frame-to-frame in practice (a
+        # real capture routinely shows several consecutive "no hand"
+        # frames interleaved with good detections, even while a hand is
+        # genuinely resting on/near the object) — so a single dropped
+        # detection must not discard in-progress engagement (touching or
+        # approaching), or a pick can never accumulate the two consecutive
+        # touching frames it needs to promote to HELD.
+        _GAP_TOLERANT_STATES = (
+            InteractionState.OBJECT_BEING_HELD,
+            InteractionState.OBJECT_MOVING_WITH_HAND,
+            InteractionState.HAND_TOUCHING_OBJECT,
+            InteractionState.HAND_APPROACHING_OBJECT,
+        )
+
+        if obj is None:
+            # The object itself wasn't detected this frame — most often a
+            # hand closing around it occludes its own color/shape signature.
+            # Don't spontaneously release just because of a missing
+            # detection; hold the state and wait for the next real
+            # observation of the object.
+            if track.state in _GAP_TOLERANT_STATES:
                 return track.state, None
+            if track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED):
+                return track.state, track.zone
             return InteractionState.NONE, None
 
         box_center = bbox_center(obj.bbox)
+
+        if not hand_centers:
+            # The object IS clearly visible here — unlike the occlusion case
+            # above — but no hand exists anywhere in frame this frame. Only
+            # an already-HELD/MOVING object should actually release (the
+            # hand genuinely moved away, e.g. out of the camera's view after
+            # placing it) — a merely touching/approaching object just keeps
+            # its state and waits for the hand detector to catch up, same
+            # flicker tolerance as the obj-is-None branch above.
+            if track.state in (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_MOVING_WITH_HAND):
+                zone_name = zone_overlapping(obj.bbox, zones)
+                if zone_name is not None:
+                    return InteractionState.OBJECT_PLACED, zone_name
+                return InteractionState.OBJECT_RELEASED, None
+            if track.state in (InteractionState.HAND_TOUCHING_OBJECT, InteractionState.HAND_APPROACHING_OBJECT):
+                return track.state, None
+            if track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED):
+                return track.state, track.zone
+            return InteractionState.NONE, None
+
         nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
         distance = _dist(nearest_hand, box_center)
 
         track.hand_history.append(nearest_hand)
         track.box_history.append(box_center)
-
-        touch_threshold = self.settings.hand_object_touch_distance_px
-        approach_threshold = self.settings.hand_object_distance_px
 
         currently_held = track.state in (
             InteractionState.OBJECT_BEING_HELD,
@@ -187,7 +273,7 @@ class InteractionReasoner:
             # Hand pulled away while holding -> released, either into a
             # configured target zone (placed) or elsewhere (just
             # dropped/released).
-            zone_name = _zone_containing(box_center, zones)
+            zone_name = zone_overlapping(obj.bbox, zones)
             if zone_name is not None:
                 return InteractionState.OBJECT_PLACED, zone_name
             return InteractionState.OBJECT_RELEASED, None
@@ -199,7 +285,15 @@ class InteractionReasoner:
             # touching it again restarts the touch/hold cycle; this also
             # gives Phase 4's temporal smoother something that holds stable
             # across frames to debounce, instead of a one-frame edge event.
-            if distance <= touch_threshold:
+            #
+            # Reactivation deliberately uses a tighter test than the fresh-
+            # pick path below (hand point literally inside the object's
+            # bbox, not just within the generous touch_threshold radius):
+            # objects placed close together on a real table mean a hand
+            # reaching for a *different* object routinely passes within
+            # touch_threshold of one that's already resting/placed, which
+            # would otherwise re-trigger it as picked up again every time.
+            if point_in_bbox(nearest_hand, obj.bbox):
                 return InteractionState.HAND_TOUCHING_OBJECT, None
             return track.state, track.zone
 

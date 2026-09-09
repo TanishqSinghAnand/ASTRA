@@ -51,7 +51,7 @@ from typing import Callable, Optional
 
 from backend.config.settings import PerceptionSettings, TemporalSettings
 from backend.perception.base import ActionPrediction, InteractionState, PerceptionFrame
-from backend.perception.interaction import InteractionReasoner, tracked_classes_for, bbox_center, point_in_bbox
+from backend.perception.interaction import InteractionReasoner, tracked_classes_for, zone_overlapping
 from backend.perception.interfaces import ActionRecognizer
 from backend.temporal.temporal_smoother import TemporalSmoother
 
@@ -129,8 +129,7 @@ class RuleBasedActionRecognizer(ActionRecognizer):
     def _picked_from_outside_zones(obj, zones: list) -> bool:
         if obj is None or not zones:
             return True
-        center = bbox_center(obj.bbox)
-        return not any(point_in_bbox(center, zone.bbox) for zone in zones)
+        return zone_overlapping(obj.bbox, zones) is None
 
     def _combined_confidence(self, cls: str) -> float:
         window = self._confidence_windows.get(cls)

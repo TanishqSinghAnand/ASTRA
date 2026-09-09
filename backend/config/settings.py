@@ -52,6 +52,12 @@ class PerceptionSettings(BaseModel):
     yolo_model: str = "yolov8n.pt"
     yolo_classes: list[str] = Field(default_factory=list)  # COCO class names to track, e.g. ["cell phone", "cup"]
     yolo_confidence_threshold: float = 0.35
+    # YOLO's own internal inference resolution (its default is 640). Lower
+    # is meaningfully faster on CPU (~(640/imgsz)^2 fewer pixels processed)
+    # at some accuracy cost — 320 is plenty for a close-up tabletop demo
+    # where tracked objects fill a decent fraction of the frame; raise it
+    # if detection misses small/distant objects.
+    yolo_imgsz: int = 320
 
     # --- v2.0: multiple named placement zones, not just one ---
     # Each maps to a fraction-of-frame bbox [x1, y1, x2, y2], same shape as

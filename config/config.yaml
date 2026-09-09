@@ -19,45 +19,59 @@ camera:
 # --- Perception thresholds ---
 perception:
   confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
-  hand_object_distance_px: 80     # HAND_APPROACHING_OBJECT threshold
-  hand_object_touch_distance_px: 40  # HAND_TOUCHING_OBJECT threshold (Phase 3)
+  # hand_object_distance_px/hand_object_touch_distance_px are calibrated
+  # against a 640px-wide reference frame (backend/perception/interaction.py
+  # scales them to whatever the camera's *actual* capture width turns out
+  # to be — observed differing from config.yaml's requested resolution).
+  # Real-world debug readout showed genuine touching hands 150-330px apart
+  # at an actual 1920px-wide capture (palm-center landmark approximation is
+  # noisy, not exact contact); these values (scaled x3 at 1920px ->
+  # 450/780px) give generous margin above that observed range.
+  hand_object_distance_px: 260    # HAND_APPROACHING_OBJECT threshold, at 640px reference width
+  hand_object_touch_distance_px: 150  # HAND_TOUCHING_OBJECT threshold, at 640px reference width
   min_box_contour_area: 800       # ignore color-noise smaller than this
 
-  # Experiment area, as a fraction of frame [x1, y1, x2, y2] (0-1). There's no
-  # physical marker to detect on a real tabletop, so this is a fixed
-  # calibrated region rather than a color-detected object — matches where
-  # synthetic_scene.py draws it, so the detector can be tested against the
-  # synthetic source before ever touching a real camera.
-  experiment_area: [0.55, 0.55, 0.85, 0.85]
+  # Legacy v1 single-area field — ColorBoxDetector always emits it, but
+  # v2.0's placement logic uses target_zones (below) instead. Zeroed out so
+  # it doesn't draw a third, unused dashed box over zone_a/zone_b.
+  experiment_area: [0.0, 0.0, 0.0, 0.0]
 
-  # HSV thresholds for the color-based box detector (Phase 2). THESE ARE
-  # STARTING POINTS, TUNED AGAINST THE SYNTHETIC TEST PATTERN, NOT A REAL
-  # ROOM. Lighting varies a lot — if detection is unreliable on your actual
-  # boxes, run `python tools/calibrate_hsv.py` to find better ranges
-  # interactively and paste the results back in here. Red needs two ranges
-  # because its hue wraps around 0/179 in OpenCV's HSV space.
+  # HSV thresholds for the color-based box detector (Phase 2, reused here
+  # instead of YOLO — see detector_backend below). THESE ARE STARTING
+  # POINTS, NOT TUNED AGAINST A REAL ROOM. Lighting varies a lot — if
+  # detection is unreliable on your actual boxes, run
+  # `python tools/calibrate_hsv.py` to find better ranges interactively and
+  # paste the results back in here. Black is brightness-based (low V), so
+  # it's far more sensitive to lighting than hue-based red — calibrating
+  # for your actual room is expected, not optional. White was dropped: a
+  # white object against a white table isn't separable by HSV at all (same
+  # low-saturation/high-value signature as the background).
   colors:
+    black_box:
+      ranges:
+        - lower: [0, 0, 0]
+          upper: [180, 255, 60]
     red_box:
       ranges:
         - lower: [0, 120, 70]
           upper: [10, 255, 255]
         - lower: [170, 120, 70]
           upper: [180, 255, 255]
-    blue_box:
-      ranges:
-        - lower: [100, 110, 60]
-          upper: [128, 255, 255]
 
   # --- v2.0: general object detection ---
-  # "yolo" recognizes real object identity (phone, cup, bottle, ...) via a
-  # pretrained model — no color markers, no training. "hsv" keeps v1's
-  # color-detector path available (colors: above) if ever needed again.
-  detector_backend: yolo
+  # "hsv" tracks the color-defined boxes above (black_box/red_box) — no
+  # training, same approach v1.0 uses. "yolo" recognizes real
+  # object identity (phone, cup, bottle, ...) via a pretrained model instead
+  # — no color markers needed, but MediaPipe hand-tracking noise made
+  # touch/place detection unreliable enough in practice that this demo
+  # reverted to the color-box path; kept available for future use.
+  detector_backend: hsv
   yolo_model: yolov8n.pt          # downloads once on first use, cached after
   yolo_confidence_threshold: 0.35
-  yolo_classes:                    # COCO class names to track (exact names
-    - cell phone                   # YOLO uses, e.g. "cell phone" with a space)
+  yolo_imgsz: 320                  # lower = faster on CPU, less accurate on small/distant objects
+  yolo_classes:                    # COCO class names to track (exact names YOLO uses)
     - cup
+    - bottle
 
   # --- v2.0: multiple named placement zones (fraction-of-frame [x1,y1,x2,y2]) ---
   # Each ExperimentStep.target names one of these keys (case-insensitive) —

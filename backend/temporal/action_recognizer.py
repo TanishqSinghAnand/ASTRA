@@ -48,7 +48,7 @@ from typing import Callable, Optional
 
 from backend.config.settings import PerceptionSettings, TemporalSettings
 from backend.perception.base import ActionPrediction, InteractionState, PerceptionFrame
-from backend.perception.interaction import InteractionReasoner, bbox_center, point_in_bbox
+from backend.perception.interaction import InteractionReasoner, area_overlapping
 from backend.perception.interfaces import ActionRecognizer
 from backend.temporal.temporal_smoother import TemporalSmoother
 
@@ -123,7 +123,7 @@ class RuleBasedActionRecognizer(ActionRecognizer):
     def _picked_from_outside_area(obj, experiment_area) -> bool:
         if obj is None or experiment_area is None:
             return True
-        return not point_in_bbox(bbox_center(obj.bbox), experiment_area.bbox)
+        return not area_overlapping(obj.bbox, experiment_area.bbox)
 
     def _combined_confidence(self, cls: str) -> float:
         window = self._confidence_windows.get(cls)

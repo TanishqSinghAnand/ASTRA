@@ -37,8 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.config.settings import CameraSettings, load_settings  # noqa: E402
 from backend.perception.real_engine import RealPerceptionEngine  # noqa: E402
 from backend.services.camera_service import CameraError, CameraService  # noqa: E402
-from backend.services.display_utils import gui_available  # noqa: E402
-from backend.services.overlay import draw_perception_overlay  # noqa: E402
+from backend.services.display_utils import DEFAULT_DISPLAY_MAX_WIDTH, fit_for_display, gui_available  # noqa: E402
+from backend.services.overlay import draw_label, draw_perception_overlay  # noqa: E402
+
+WINDOW_NAME = "ASTRA live preview (Phase 2) — press q to quit"
 
 
 def main() -> None:
@@ -50,6 +52,7 @@ def main() -> None:
     parser.add_argument("--snapshot-every", type=float, default=1.0, help="Seconds between saved snapshots in --no-display mode")
     parser.add_argument("--snapshot-count", type=int, default=5, help="How many snapshots to save in --no-display mode")
     parser.add_argument("--out-dir", type=str, default="data/recordings/live_preview")
+    parser.add_argument("--display-width", type=int, default=DEFAULT_DISPLAY_MAX_WIDTH)
     args = parser.parse_args()
 
     settings = load_settings()
@@ -80,6 +83,8 @@ def main() -> None:
     display_available = (not args.no_display) and gui_available()
     if not args.no_display and not display_available:
         print("No display detected — running in snapshot mode instead.")
+    if display_available:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     out_dir = repo_root / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)  # harmless if never used (display mode)
@@ -104,12 +109,11 @@ def main() -> None:
 
             annotated = draw_perception_overlay(captured.frame, perception)
             hud = f"frame {captured.frame_index}  infer {infer_ms:5.1f}ms  ~{display_fps:4.1f} fps  objects={len(perception.objects)} pose={'Y' if perception.pose.detected else 'N'} hands={len(perception.hands)}"
-            cv2.putText(annotated, hud, (10, annotated.shape[0] - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1, cv2.LINE_AA)
+            draw_label(annotated, hud, (10, annotated.shape[0] - 16), (0, 255, 60), font_scale=0.6)
 
             if display_available:
                 try:
-                    cv2.imshow("ASTRA live preview (Phase 2) — press q to quit", annotated)
+                    cv2.imshow(WINDOW_NAME, fit_for_display(annotated, args.display_width))
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
                 except cv2.error:

@@ -19,8 +19,17 @@ camera:
 # --- Perception thresholds ---
 perception:
   confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
-  hand_object_distance_px: 80     # HAND_APPROACHING_OBJECT threshold
-  hand_object_touch_distance_px: 40  # HAND_TOUCHING_OBJECT threshold (Phase 3)
+  # hand_object_distance_px/hand_object_touch_distance_px are calibrated
+  # against a 640px-wide reference frame (backend/perception/interaction.py
+  # scales them to whatever the camera's *actual* capture width turns out
+  # to be — observed differing from config.yaml's requested resolution,
+  # e.g. capturing 1920x1080 despite a 1280x720 request). Real-world debug
+  # readout (from the v2.0 sibling) showed genuine touching hands
+  # 150-330px apart at an actual 1920px-wide capture (palm-center landmark
+  # approximation is noisy, not exact contact); these values (scaled x3 at
+  # 1920px -> 450/780px) give generous margin above that observed range.
+  hand_object_distance_px: 260    # HAND_APPROACHING_OBJECT threshold, at 640px reference width
+  hand_object_touch_distance_px: 150  # HAND_TOUCHING_OBJECT threshold, at 640px reference width
   min_box_contour_area: 800       # ignore color-noise smaller than this
 
   # Experiment area, as a fraction of frame [x1, y1, x2, y2] (0-1). There's no

@@ -30,7 +30,16 @@ _RELEVANT_LANDMARKS: dict[str, int] = {
 
 
 class HandEstimator:
-    def __init__(self, max_num_hands: int = 2, min_detection_confidence: float = 0.5, min_tracking_confidence: float = 0.5):
+    # Lowered from MediaPipe's 0.5 default — real-world testing showed the
+    # dedicated hand-landmark model missing genuine, clearly-in-frame hands
+    # in a majority of frames under casual demo lighting/framing (it needs
+    # a cleaner, more separated view of the fingers than pose's coarser
+    # wrist tracking does). A false detection here just means a slightly
+    # noisier hand_center_px estimate for one frame — interaction.py's
+    # touch/approach thresholds already have generous margin to absorb
+    # that — whereas a missed detection means no signal at all that frame,
+    # which is the failure mode that was actually breaking pick/place.
+    def __init__(self, max_num_hands: int = 2, min_detection_confidence: float = 0.3, min_tracking_confidence: float = 0.3):
         self._hands = _mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=max_num_hands,

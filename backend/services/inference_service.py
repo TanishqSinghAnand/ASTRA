@@ -173,8 +173,22 @@ class InferenceService:
         timer — hand-contact while watching for a pick, or zone-occupancy
         while held (see interaction.py's InteractionEvent.dwell_elapsed/
         dwell_required) — for the dashboard to show live progress instead
-        of just a final state. None when nothing is currently dwelling."""
-        for cls, event in self.action_recognizer.last_events.items():
+        of just a final state. None when nothing is currently dwelling.
+
+        Prefers the recognizer's own active_class (see action_recognizer.
+        py's module docstring) so the displayed progress bar always
+        matches whichever object is actually driving the current
+        candidate — an unrelated resting object with a stale dwell value
+        must not get shown ahead of the one genuinely in progress. Falls
+        back to the first dwelling class for a brand-new touch that
+        hasn't been confirmed (and therefore hasn't claimed active_class)
+        yet."""
+        events = self.action_recognizer.last_events
+        active = self.action_recognizer.active_class
+        active_event = events.get(active) if active else None
+        if active_event is not None and active_event.dwell_elapsed is not None:
+            return {"object": active, "elapsed": round(active_event.dwell_elapsed, 1), "required": active_event.dwell_required}
+        for cls, event in events.items():
             if event.dwell_elapsed is not None:
                 return {
                     "object": cls,

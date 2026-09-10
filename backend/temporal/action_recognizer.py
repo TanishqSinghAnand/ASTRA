@@ -30,6 +30,23 @@ Action mapping (only PICK/PLACE — this experiment has no other gesture):
     zone it landed in — see zones.py and validator.py's WRONG_LOCATION
     handling.
 
+Multi-object candidate selection (_active_class): with more than one
+tracked class, a naive "first class with a non-None action wins this
+frame" picks whichever class happens to iterate first — and OBJECT_PLACED
+persists *indefinitely* once reached (interaction.py's sticky-placed
+design), so an object placed during an earlier step would otherwise win
+that slot on literally every subsequent frame, permanently starving any
+other class's own PICK/PLACE from ever reaching the smoother (it never
+even gets offered as a candidate, so stability_frames of consecutive
+identical candidates can never accumulate for it — observed directly:
+holding a second object well past its dwell threshold never registered
+anything, because a first object placed earlier kept winning first).
+_active_class only ever changes on a fresh transition (event.changed)
+into HELD or PLACED, then stays pinned to that class — reporting its
+*current* state every frame, changed or not — until some other class has
+a fresh transition of its own. A real transition always immediately
+outranks however long another class has been quietly resting.
+
 COMPLETE_EXPERIMENT (design decision, per spec): there is no physical
 gesture for "close out the experiment" — step 5 in bas_sample_001.json has
 no PICK/PLACE behind it. This recognizer deliberately never emits
@@ -62,6 +79,7 @@ from backend.temporal.temporal_smoother import TemporalSmoother
 # blended confidence score — see module docstring.
 INTERACTION_CERTAINTY = 0.90
 _CONFIDENCE_WINDOW_LEN = 10
+_CANDIDATE_STATES = (InteractionState.OBJECT_BEING_HELD, InteractionState.OBJECT_PLACED)
 
 
 class RuleBasedActionRecognizer(ActionRecognizer):
@@ -87,6 +105,13 @@ class RuleBasedActionRecognizer(ActionRecognizer):
         # live_demo.py's debug HUD), not read by any recognition logic
         # here.
         self.last_events: dict[str, object] = {}
+        # Which class currently "owns" the candidate slot — see
+        # _active_class in the module docstring. Also exposed for
+        # introspection (inference_service.py's dwell-progress broadcast
+        # shows whichever object is actually driving the candidate, not
+        # just the first one alphabetically/config-order that happens to
+        # have some dwell timer running).
+        self.active_class: Optional[str] = None
 
     def reset(self) -> None:
         self.reasoner.reset()
@@ -94,31 +119,31 @@ class RuleBasedActionRecognizer(ActionRecognizer):
         for window in self._confidence_windows.values():
             window.clear()
         self.last_events = {}
+        self.active_class = None
 
     def update(self, perception_frame: PerceptionFrame) -> ActionPrediction:
         events = self.reasoner.update(perception_frame)
         self.last_events = events
         objects_by_class = {obj.cls: obj for obj in perception_frame.objects}
 
-        candidate_key: Optional[str] = None
-        candidate_conf = 0.0
-        candidate_location: Optional[str] = None
-
         for cls, event in events.items():
             obj = objects_by_class.get(cls)
             if obj is not None:
                 self._confidence_windows[cls].append(obj.confidence)
+            if event.changed and event.state in _CANDIDATE_STATES:
+                self.active_class = cls
 
-            action_key: Optional[str] = None
-            if event.state == InteractionState.OBJECT_BEING_HELD:
-                action_key = f"PICK_{cls.upper()}"
-            elif event.state == InteractionState.OBJECT_PLACED:
-                action_key = f"PLACE_{cls.upper()}"
-
-            if action_key is not None and candidate_key is None:
-                candidate_key = action_key
-                candidate_conf = self._combined_confidence(cls)
-                candidate_location = event.zone
+        active_event = events.get(self.active_class) if self.active_class else None
+        candidate_key: Optional[str] = None
+        candidate_conf = 0.0
+        candidate_location: Optional[str] = None
+        if active_event is not None and active_event.state in _CANDIDATE_STATES:
+            prefix = "PICK" if active_event.state == InteractionState.OBJECT_BEING_HELD else "PLACE"
+            candidate_key = f"{prefix}_{self.active_class.upper()}"
+            candidate_conf = self._combined_confidence(self.active_class)
+            candidate_location = active_event.zone
+        else:
+            self.active_class = None
 
         return self.smoother.update(candidate_key, candidate_conf, location=candidate_location)
 

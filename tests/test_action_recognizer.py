@@ -85,6 +85,34 @@ def _frame(
     return PerceptionFrame(frame_index=0, timestamp=timestamp, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects, hands=hands)
 
 
+def _two_object_settings() -> PerceptionSettings:
+    return PerceptionSettings(
+        detector_backend="hsv",
+        hand_touch_distance_px=40,
+        pick_dwell_seconds=PICK_DWELL,
+        place_dwell_seconds=PLACE_DWELL,
+        colors={
+            "blue_box": ColorSpec(ranges=[HSVRange(lower=(0, 0, 0), upper=(1, 1, 1))]),
+            "yellow_box": ColorSpec(ranges=[HSVRange(lower=(0, 0, 0), upper=(1, 1, 1))]),
+        },
+        target_zones={"zone": (0.0, 0.0, 0.0, 0.0)},
+    )
+
+
+def _multi_frame(
+    timestamp: float,
+    boxes: dict[str, tuple[float, float]],
+    hand_center_px: tuple[float, float] | None,
+) -> PerceptionFrame:
+    """Like _frame, but with zero or more simultaneously-visible tracked
+    objects (boxes: cls -> center) instead of a single implicit one."""
+    objects = [DetectedObject(**{"class": "zone"}, confidence=1.0, bbox=ZONE_BBOX)]
+    for cls, center in boxes.items():
+        objects.append(_box(center, cls=cls))
+    hands = [_hand(hand_center_px)] if hand_center_px is not None else []
+    return PerceptionFrame(frame_index=0, timestamp=timestamp, frame_width=FRAME_W, frame_height=FRAME_H, objects=objects, hands=hands)
+
+
 def _recognizer(stability_frames=3, min_confidence_duration_ms=100):
     clock = FakeClock()
     temporal = TemporalSettings(action_stability_frames=stability_frames, min_confidence_duration_ms=min_confidence_duration_ms)
@@ -217,3 +245,47 @@ def test_stability_below_threshold_does_not_emit():
     predictions = _pick_and_hold(recognizer, clock, OUTSIDE_ZONE, hold_extra_seconds=0.3)
     actions = [p.action for p in predictions if p.action is not None]
     assert actions == []
+
+
+def test_second_object_pick_not_blocked_by_first_objects_placed_state():
+    """Regression: OBJECT_PLACED persists indefinitely once reached
+    (interaction.py's sticky-placed design). A naive "first tracked class
+    with a non-None action wins this frame" selection let an object
+    placed during an earlier step permanently monopolize the single
+    candidate slot on every subsequent frame, silently starving a
+    *different* object's own PICK/PLACE — it was never even offered as a
+    candidate, so stability_frames of consecutive identical candidates
+    could never accumulate for it, no matter how long it was actually
+    held. Observed directly: holding a second box well past its dwell
+    threshold produced nothing at all."""
+    settings = _two_object_settings()
+    clock = FakeClock()
+    temporal = TemporalSettings(action_stability_frames=3, min_confidence_duration_ms=100)
+    recognizer = RuleBasedActionRecognizer(settings, temporal, clock=clock)
+
+    blue_rest = OUTSIDE_ZONE
+    blue_hand = (blue_rest[0] + 5, blue_rest[1])
+    yellow_rest = (250.0, 150.0)
+    yellow_hand = (yellow_rest[0] + 5, yellow_rest[1])
+
+    def frame(ts, blue_center, yellow_center, hand):
+        return _multi_frame(ts, {"blue_box": blue_center, "yellow_box": yellow_center}, hand)
+
+    def run_for(seconds, blue_center, yellow_center, hand):
+        predictions = []
+        elapsed = 0.0
+        while elapsed < seconds:
+            clock.tick(0.3)
+            elapsed += 0.3
+            predictions.append(recognizer.update(frame(clock.t, blue_center, yellow_center, hand)))
+        return predictions
+
+    # Pick up blue_box and carry it into the zone -> confirms PICK then PLACE.
+    setup = run_for(PICK_DWELL + STABILITY_MARGIN, blue_rest, yellow_rest, blue_hand)
+    setup += run_for(PLACE_DWELL + STABILITY_MARGIN, INSIDE_ZONE, yellow_rest, None)
+    assert [p.action for p in setup if p.action] == ["PICK_BLUE_BOX", "PLACE_BLUE_BOX"]
+
+    # Now pick up yellow_box, with blue_box sitting OBJECT_PLACED (stuck,
+    # unchanging) at INSIDE_ZONE the whole time -- must still register.
+    yellow_predictions = run_for(PICK_DWELL + STABILITY_MARGIN, INSIDE_ZONE, yellow_rest, yellow_hand)
+    assert [p.action for p in yellow_predictions if p.action] == ["PICK_YELLOW_BOX"]

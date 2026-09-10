@@ -1,4 +1,5 @@
 import type { BrowserCameraStatus } from "@/lib/useBrowserCameraUpload";
+import type { DwellProgress } from "@/lib/types";
 
 interface CameraViewProps {
   frameImage: string | null;
@@ -7,6 +8,7 @@ interface CameraViewProps {
   fps: number;
   lastAction: string | null;
   lastConfidence: number;
+  dwell: DwellProgress | null;
   browserCameraStatus: BrowserCameraStatus;
 }
 
@@ -23,6 +25,7 @@ export function CameraView({
   fps,
   lastAction,
   lastConfidence,
+  dwell,
   browserCameraStatus,
 }: CameraViewProps) {
   const isBrowserSource = cameraSource === "browser";
@@ -88,6 +91,28 @@ export function CameraView({
           )}
         </span>
       </div>
+
+      {/* Live dwell-timer progress (backend/perception/interaction.py:
+          PICK needs sustained hand contact, PLACE needs sustained zone
+          occupancy — both timed, not instant) — shown whenever any
+          tracked object currently has one running, so "why hasn't this
+          registered yet" has a visible answer instead of just silence. */}
+      {dwell && (
+        <div className="flex items-center gap-3 border-t border-[var(--color-border)] px-4 py-2">
+          <span className="font-mono text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+            {dwell.object}
+          </span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-border)]">
+            <div
+              className="h-full rounded-full bg-[var(--color-cyan)] transition-[width] duration-150 ease-linear"
+              style={{ width: `${Math.min(100, (dwell.elapsed / dwell.required) * 100)}%` }}
+            />
+          </div>
+          <span className="font-mono text-xs text-[var(--color-text-faint)]">
+            {dwell.elapsed.toFixed(1)}s / {dwell.required.toFixed(1)}s
+          </span>
+        </div>
+      )}
     </div>
   );
 }

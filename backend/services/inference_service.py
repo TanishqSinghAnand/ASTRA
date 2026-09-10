@@ -168,6 +168,21 @@ class InferenceService:
         if frame is not None:
             self.camera.push_frame(frame)
 
+    def _active_dwell(self) -> dict | None:
+        """Which tracked object (if any) currently has a running dwell
+        timer — hand-contact while watching for a pick, or zone-occupancy
+        while held (see interaction.py's InteractionEvent.dwell_elapsed/
+        dwell_required) — for the dashboard to show live progress instead
+        of just a final state. None when nothing is currently dwelling."""
+        for cls, event in self.action_recognizer.last_events.items():
+            if event.dwell_elapsed is not None:
+                return {
+                    "object": cls,
+                    "elapsed": round(event.dwell_elapsed, 1),
+                    "required": event.dwell_required,
+                }
+        return None
+
     # -- status / snapshot for REST -----------------------------------------
 
     def status_dict(self) -> dict:
@@ -224,6 +239,7 @@ class InferenceService:
                             "confidence": prediction.confidence,
                             "step": self.sequence_engine.current_step(),
                             "fps": round(self.camera.measured_fps, 1),
+                            "dwell": self._active_dwell(),
                         }
                     )
 

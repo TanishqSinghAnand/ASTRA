@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ERROR_STATUSES } from "@/lib/types";
-import type { ExperimentDefinition, LiveMessage, SequenceEvent, StatusDict } from "@/lib/types";
+import type { DwellProgress, ExperimentDefinition, LiveMessage, SequenceEvent, StatusDict } from "@/lib/types";
 import { useLiveSocket } from "@/lib/useLiveSocket";
 import { useBrowserCameraUpload } from "@/lib/useBrowserCameraUpload";
 import { Header } from "./Header";
@@ -22,6 +22,7 @@ export function Dashboard() {
   const [frameImage, setFrameImage] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [lastConfidence, setLastConfidence] = useState(0);
+  const [dwell, setDwell] = useState<DwellProgress | null>(null);
   const [bannerState, setBannerState] = useState<ErrorBannerState>("none");
   const [errorEvent, setErrorEvent] = useState<SequenceEvent | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,6 +36,7 @@ export function Dashboard() {
       case "perception": {
         setLastAction(msg.action);
         setLastConfidence(msg.confidence);
+        setDwell(msg.dwell);
         setStatus((prev) =>
           prev ? { ...prev, current_step: msg.step, fps: msg.fps } : prev,
         );
@@ -107,6 +109,7 @@ export function Dashboard() {
           setFrameImage(null);
           setLastAction(null);
           setLastConfidence(0);
+          setDwell(null);
         }
       } catch {
         // Surfaced via status.error on the next poll rather than a toast —
@@ -131,6 +134,7 @@ export function Dashboard() {
             fps={status?.fps ?? 0}
             lastAction={lastAction}
             lastConfidence={lastConfidence}
+            dwell={dwell}
             browserCameraStatus={browserCameraStatus}
           />
         </div>

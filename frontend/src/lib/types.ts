@@ -69,6 +69,12 @@ export interface StatusDict {
   offline: boolean;
 }
 
+export interface DwellProgress {
+  object: string;
+  elapsed: number;
+  required: number;
+}
+
 export type LiveMessage =
   | ({ type: "status" } & StatusDict)
   | {
@@ -77,6 +83,7 @@ export type LiveMessage =
       confidence: number;
       step: number;
       fps: number;
+      dwell: DwellProgress | null;
     }
   | ({ type: "sequence_event" } & SequenceEvent)
   | { type: "frame"; image: string; frame_index: number };

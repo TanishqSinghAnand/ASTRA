@@ -8,7 +8,7 @@ interface ModeTabsProps {
 
 const TABS: { mode: DetectorMode; label: string; hint: string }[] = [
   { mode: "color", label: "COLOR DETECTION", hint: "blue / yellow boxes" },
-  { mode: "yolo", label: "YOLO DETECTION", hint: "mouse / bottle" },
+  { mode: "yolo", label: "YOLO DETECTION", hint: "remote / bottle" },
 ];
 
 // Switching tabs tears down and rebuilds the whole InferenceService on

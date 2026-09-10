@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api")
 # Two tabs in the dashboard, two detector backends — each needs its own
 # config.yaml (different detector_backend/colors/yolo_classes *and*
 # experiment_config, since the two use different tracked object ids: the
-# color path's BLUE_BOX/YELLOW_BOX vs YOLO's MOUSE/BOTTLE). Only one runs at
+# color path's BLUE_BOX/YELLOW_BOX vs YOLO's REMOTE/BOTTLE). Only one runs at
 # a time — a webcam can't be opened by two capture handles at once, and
 # running both detectors' models simultaneously on CPU for a "compare
 # them side by side" view was never the ask — so switching modes tears

@@ -1,4 +1,4 @@
-# ASTRA — YOLO variant config (mouse/bottle, no color markers needed).
+# ASTRA — YOLO variant config (remote/bottle, no color markers needed).
 #
 # This is config.yaml's sibling for the pretrained-object-detection path —
 # same interaction/zone logic, different detector_backend. The default
@@ -31,10 +31,16 @@ perception:
   # --- v2.0: general object detection ---
   detector_backend: yolo
   yolo_model: yolov8n.pt          # downloads once on first use, cached after
-  yolo_confidence_threshold: 0.35
-  yolo_imgsz: 320
+  # Lowered from 0.35 and imgsz raised from 320 -- the mouse object this
+  # config tracked before went completely undetected (no box at all, not
+  # just a low-confidence one) held up close to camera in a fist; nano-
+  # scale YOLO downscaled to 320px loses too much detail on small/held
+  # handheld objects. remote is the same size class, so carrying the same
+  # fix forward preemptively rather than waiting to hit it again.
+  yolo_confidence_threshold: 0.25
+  yolo_imgsz: 480
   yolo_classes:                    # COCO class names to track (exact names YOLO uses)
-    - mouse
+    - remote
     - bottle
 
   # --- v2.0: multiple named placement zones (fraction-of-frame [x1,y1,x2,y2]) ---

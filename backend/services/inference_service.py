@@ -41,9 +41,33 @@ STREAM_MAX_WIDTH = 640  # downscale before encoding; a live status view
 
 class InferenceService:
     def __init__(self, settings: Settings, experiment: ExperimentDefinition, repo_root: Path):
+        self.repo_root = repo_root
+        # Populated by reconfigure() below, called at the end of __init__ —
+        # kept here so a live detector-mode switch (backend/api/routes.py's
+        # /api/mode) can call reconfigure() again on this *same* instance
+        # instead of constructing a whole new InferenceService. That
+        # distinction matters: _subscribers (just below) is a live
+        # WebSocket fan-out list. A connected client's /ws/live handler
+        # captures whichever InferenceService instance was current *at
+        # connect time* and holds that reference for the socket's entire
+        # lifetime — swapping in a brand-new instance would silently
+        # orphan every already-connected dashboard (subscribed to a
+        # now-dead object's queue, never broadcast to again) until it
+        # happened to reconnect. Reconfiguring in place keeps every
+        # existing subscription valid across a mode switch.
+        self._subscribers: list[asyncio.Queue] = []
+        self._task: asyncio.Task | None = None
+        self._stream_task: asyncio.Task | None = None
+        self.reconfigure(settings, experiment)
+
+    def reconfigure(self, settings: Settings, experiment: ExperimentDefinition) -> None:
+        """Rebuilds every settings/experiment-derived piece (camera,
+        perception/action engines, sequence engine, voice/logging/
+        recording, run state) in place. Caller must have already stopped
+        the service if it was running — this does not itself cancel any
+        in-flight loop tasks."""
         self.settings = settings
         self.experiment = experiment
-        self.repo_root = repo_root
 
         # "browser" has no local capture device to read — frames arrive
         # pushed from a connected client's own camera instead (see
@@ -51,7 +75,7 @@ class InferenceService:
         # this and CameraService expose the same start/stop/read_latest/
         # is_running/measured_fps shape, so the two loops below don't need
         # to know which one they're holding.
-        self.camera = BrowserFrameSource() if settings.camera.source == "browser" else CameraService(settings.camera, repo_root)
+        self.camera = BrowserFrameSource() if settings.camera.source == "browser" else CameraService(settings.camera, self.repo_root)
         if settings.features.use_mock_engines:
             self.perception: PerceptionEngine = MockPerceptionEngine()
             self.action_recognizer: ActionRecognizer = MockActionRecognizer()
@@ -75,10 +99,6 @@ class InferenceService:
         self.latest_perception: PerceptionFrame | None = None
         self.latest_prediction: ActionPrediction | None = None
         self.started_at: float | None = None
-
-        self._subscribers: list[asyncio.Queue] = []
-        self._task: asyncio.Task | None = None
-        self._stream_task: asyncio.Task | None = None
 
     # -- pub/sub for the WebSocket layer -----------------------------------
 

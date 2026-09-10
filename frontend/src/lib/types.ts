@@ -55,6 +55,16 @@ export interface ExperimentDefinition {
 
 export type RunStatus = "IDLE" | "RUNNING" | "FINISHED" | "STOPPED" | "ERROR";
 
+// The dashboard's two tabs — matches backend/api/routes.py's
+// _MODE_CONFIGS keys exactly.
+export type DetectorMode = "color" | "yolo";
+
+export interface ModeResponse {
+  mode: DetectorMode;
+  status: StatusDict;
+  experiment: ExperimentDefinition;
+}
+
 export interface StatusDict {
   status: RunStatus;
   error: string | null;

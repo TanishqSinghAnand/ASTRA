@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ERROR_STATUSES } from "@/lib/types";
-import type { DwellProgress, ExperimentDefinition, LiveMessage, SequenceEvent, StatusDict } from "@/lib/types";
+import type { DetectorMode, DwellProgress, ExperimentDefinition, LiveMessage, SequenceEvent, StatusDict } from "@/lib/types";
 import { useLiveSocket } from "@/lib/useLiveSocket";
 import { useBrowserCameraUpload } from "@/lib/useBrowserCameraUpload";
 import { Header } from "./Header";
+import { ModeTabs } from "./ModeTabs";
 import { CameraView } from "./CameraView";
 import { StepChecklist } from "./StepChecklist";
 import { StatusPanel, type ErrorBannerState } from "./StatusPanel";
@@ -26,6 +27,7 @@ export function Dashboard() {
   const [bannerState, setBannerState] = useState<ErrorBannerState>("none");
   const [errorEvent, setErrorEvent] = useState<SequenceEvent | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<DetectorMode>("color");
 
   const handleMessage = useCallback((msg: LiveMessage) => {
     switch (msg.type) {
@@ -80,6 +82,7 @@ export function Dashboard() {
     api.getExperiment().then(setExperiment).catch(() => {});
     api.getLog().then((r) => setEvents(r.events)).catch(() => {});
     api.getStatus().then(setStatus).catch(() => {});
+    api.getMode().then((r) => setMode(r.mode)).catch(() => {});
   }, []);
 
   // Periodic fallback poll: the WS only pushes a full StatusDict once, on
@@ -121,9 +124,39 @@ export function Dashboard() {
     [],
   );
 
+  const handleModeSelect = useCallback(
+    async (next: DetectorMode) => {
+      if (next === mode || busy) return;
+      setBusy(true);
+      try {
+        // Backend tears down and rebuilds the whole InferenceService for
+        // the other detector (api.ts's setMode comment) — a different
+        // experiment entirely, not just a display filter, so every piece
+        // of live/run state resets along with it.
+        const { mode: confirmed, status: freshStatus, experiment: freshExperiment } = await api.setMode(next);
+        setMode(confirmed);
+        setStatus(freshStatus);
+        setExperiment(freshExperiment);
+        setEvents([]);
+        setFrameImage(null);
+        setLastAction(null);
+        setLastConfidence(0);
+        setDwell(null);
+        setBannerState("none");
+        setErrorEvent(null);
+      } catch {
+        // Same "surfaced on the next status poll" policy as runControl.
+      } finally {
+        setBusy(false);
+      }
+    },
+    [mode, busy],
+  );
+
   return (
     <div className="flex flex-1 flex-col">
       <Header connected={connected} device={status?.device ?? "CPU (MediaPipe)"} />
+      <ModeTabs mode={mode} busy={busy} onSelect={handleModeSelect} />
 
       <div className="flex flex-1 gap-4 overflow-hidden p-4">
         <div className="min-w-0 flex-[3]">

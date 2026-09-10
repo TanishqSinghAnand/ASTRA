@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.experiment = experiment
+    app.state.mode = "color"  # default config.yaml is the color-detector one — see api/routes.py's _MODE_CONFIGS
     app.state.inference_service = InferenceService(settings, experiment, REPO_ROOT)
     logger.info(
         "ASTRA backend ready. Experiment=%s (%d steps). Camera source=%s.",

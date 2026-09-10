@@ -1,4 +1,4 @@
-import type { ExperimentDefinition, SequenceEvent, StatusDict } from "./types";
+import type { DetectorMode, ExperimentDefinition, ModeResponse, SequenceEvent, StatusDict } from "./types";
 
 // Configurable per the project's "every tunable lives in config, not
 // scattered through code" rule (config/config.yaml on the backend side) —
@@ -34,8 +34,14 @@ async function postJson<T>(path: string): Promise<T> {
 export const api = {
   getStatus: () => getJson<StatusDict>("/api/status"),
   getExperiment: () => getJson<ExperimentDefinition>("/api/experiment"),
+  getMode: () => getJson<{ mode: DetectorMode; available: DetectorMode[] }>("/api/mode"),
   getLog: () => getJson<{ events: SequenceEvent[] }>("/api/experiment/log"),
   start: () => postJson<StatusDict>("/api/experiment/start"),
   stop: () => postJson<StatusDict>("/api/experiment/stop"),
   reset: () => postJson<StatusDict>("/api/experiment/reset"),
+  // Tears down the running InferenceService and rebuilds one from the
+  // other detector's config.yaml (backend/api/routes.py) — response
+  // carries the *new* experiment (different object ids/steps, not a
+  // status refresh) and a fresh IDLE status.
+  setMode: (mode: DetectorMode) => postJson<ModeResponse>(`/api/mode/${mode}`),
 };

@@ -8,11 +8,13 @@ without needing a real camera or a MediaPipe model load.
 from __future__ import annotations
 
 import os
+import unittest.mock
 
 os.environ["USE_MOCK_ENGINES"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from backend.api import routes  # noqa: E402
 from backend.main import app  # noqa: E402
 
 
@@ -60,6 +62,31 @@ def test_unknown_mode_is_rejected():
         # Rejecting an unknown mode must not have torn down the running
         # service — still on the original mode afterward.
         assert client.get("/api/mode").json()["mode"] == "color"
+
+
+def test_yolo_mode_hidden_and_rejected_when_ultralytics_unavailable():
+    """render.yaml's hosted deployment runs requirements-cloud.txt, which
+    deliberately omits ultralytics/torch (too heavy for a free-tier
+    instance -- see that file's docstring). Without this, the YOLO tab
+    would still be offered and its first click would die on a bare
+    ModuleNotFoundError from backend/perception/real_engine.py's lazy
+    import. _yolo_available() is lru_cache'd, so this clears the cached
+    True from other tests in this module before/after forcing it False."""
+    routes._yolo_available.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with unittest.mock.patch("importlib.util.find_spec", return_value=None):
+                body = client.get("/api/mode").json()
+                assert "yolo" not in body["available"]
+
+                resp = client.post("/api/mode/yolo")
+                assert resp.status_code == 400
+                assert "ultralytics" in resp.json()["detail"] or "requirements" in resp.json()["detail"]
+
+                # Rejecting it must not have torn down the running service.
+                assert client.get("/api/mode").json()["mode"] == "color"
+    finally:
+        routes._yolo_available.cache_clear()
 
 
 def test_mode_switch_does_not_orphan_existing_subscribers():

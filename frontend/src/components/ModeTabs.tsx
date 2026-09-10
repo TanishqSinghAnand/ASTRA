@@ -2,6 +2,7 @@ import type { DetectorMode } from "@/lib/types";
 
 interface ModeTabsProps {
   mode: DetectorMode;
+  available: DetectorMode[];
   busy: boolean;
   onSelect: (mode: DetectorMode) => void;
 }
@@ -18,10 +19,16 @@ const TABS: { mode: DetectorMode; label: string; hint: string }[] = [
 // whatever's currently running. No confirmation dialog: this is a local,
 // single-operator demo tool, not a multi-user app where that could
 // surprise someone else.
-export function ModeTabs({ mode, busy, onSelect }: ModeTabsProps) {
+//
+// `available` (from GET /api/mode) hides YOLO DETECTION entirely on a
+// deployment running requirements-cloud.txt (render.yaml) -- that build
+// deliberately omits ultralytics/torch to fit a free-tier instance, so
+// the tab would otherwise be clickable but fail on first use.
+export function ModeTabs({ mode, available, busy, onSelect }: ModeTabsProps) {
+  const tabs = TABS.filter((tab) => available.includes(tab.mode));
   return (
     <div className="flex gap-1 border-b border-[var(--color-border)] px-4 pt-3">
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const active = tab.mode === mode;
         return (
           <button

@@ -3,6 +3,9 @@ shared InferenceService instance stored on app.state; no business logic
 lives here."""
 from __future__ import annotations
 
+import importlib.util
+from functools import lru_cache
+
 from fastapi import APIRouter, HTTPException, Request
 
 from backend.config.settings import REPO_ROOT, load_settings
@@ -10,6 +13,17 @@ from backend.experiment.experiment_loader import ExperimentLoadError, load_exper
 from backend.services.inference_service import InferenceService
 
 router = APIRouter(prefix="/api")
+
+
+@lru_cache(maxsize=1)
+def _yolo_available() -> bool:
+    """requirements-cloud.txt (render.yaml's hosted deployment) deliberately
+    excludes ultralytics/torch -- too heavy for a free-tier instance (see
+    its own docstring). Checked once, cheaply (no import, just whether the
+    module *could* be imported), so the "yolo" tab can be hidden on that
+    deployment instead of the dashboard offering a tab whose first request
+    dies on a bare ModuleNotFoundError."""
+    return importlib.util.find_spec("ultralytics") is not None
 
 # Two tabs in the dashboard, two detector backends — each needs its own
 # config.yaml (different detector_backend/colors/yolo_classes *and*
@@ -77,7 +91,8 @@ async def get_log(request: Request) -> dict:
 
 @router.get("/mode")
 async def get_mode(request: Request) -> dict:
-    return {"mode": getattr(request.app.state, "mode", "color"), "available": list(_MODE_CONFIGS)}
+    available = [m for m in _MODE_CONFIGS if m != "yolo" or _yolo_available()]
+    return {"mode": getattr(request.app.state, "mode", "color"), "available": available}
 
 
 @router.post("/mode/{mode}")
@@ -91,6 +106,12 @@ async def set_mode(mode: str, request: Request) -> dict:
     refresh)."""
     if mode not in _MODE_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Unknown mode {mode!r}; expected one of {list(_MODE_CONFIGS)}")
+    if mode == "yolo" and not _yolo_available():
+        raise HTTPException(
+            status_code=400,
+            detail="YOLO detection isn't available on this deployment (requirements-cloud.txt omits "
+            "ultralytics/torch to fit a free-tier instance) -- needs the full requirements.txt.",
+        )
     app = request.app
     svc = _svc(request)
     await svc.stop()

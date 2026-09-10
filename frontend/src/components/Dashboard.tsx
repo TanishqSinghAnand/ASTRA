@@ -28,6 +28,7 @@ export function Dashboard() {
   const [errorEvent, setErrorEvent] = useState<SequenceEvent | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<DetectorMode>("color");
+  const [availableModes, setAvailableModes] = useState<DetectorMode[]>(["color"]);
 
   const handleMessage = useCallback((msg: LiveMessage) => {
     switch (msg.type) {
@@ -82,7 +83,10 @@ export function Dashboard() {
     api.getExperiment().then(setExperiment).catch(() => {});
     api.getLog().then((r) => setEvents(r.events)).catch(() => {});
     api.getStatus().then(setStatus).catch(() => {});
-    api.getMode().then((r) => setMode(r.mode)).catch(() => {});
+    api.getMode().then((r) => {
+      setMode(r.mode);
+      setAvailableModes(r.available);
+    }).catch(() => {});
   }, []);
 
   // Periodic fallback poll: the WS only pushes a full StatusDict once, on
@@ -156,7 +160,7 @@ export function Dashboard() {
   return (
     <div className="flex flex-1 flex-col">
       <Header connected={connected} device={status?.device ?? "CPU (MediaPipe)"} />
-      <ModeTabs mode={mode} busy={busy} onSelect={handleModeSelect} />
+      <ModeTabs mode={mode} available={availableModes} busy={busy} onSelect={handleModeSelect} />
 
       <div className="flex flex-1 gap-4 overflow-hidden p-4">
         <div className="min-w-0 flex-[3]">

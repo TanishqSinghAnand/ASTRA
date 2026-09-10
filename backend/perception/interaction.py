@@ -1,63 +1,65 @@
-"""Object-motion interaction reasoning (Phase 3; multi-zone placement v2.0;
-redesigned to motion-based tracking after real-camera testing).
+"""Dwell-time interaction reasoning (Phase 3; multi-zone placement v2.0;
+redesigned twice now after real-camera testing — see below).
 
-Still perception, not experiment logic: this module only answers "is this
-object currently being carried, or resting — and if resting, in which
-configured zone?" for each tracked box. It knows nothing about PICK/PLACE
-experiment steps or the sequence — Phase 4 (backend/temporal/) is what
-turns an InteractionState transition into an action_key like
-"PICK_RED_BOX".
+Still perception, not experiment logic: this module only answers "has
+this object been picked up, and if so, has it been sitting in a
+configured zone long enough to count as placed?" for each tracked box. It
+knows nothing about PICK/PLACE experiment steps or the sequence —
+Phase 4 (backend/temporal/) is what turns an InteractionState transition
+into an action_key like "PICK_RED_BOX".
 
-Design note — why motion, not hand proximity: the original design (see
-git history) inferred PICK/PLACE from hand-to-object distance, using
-MediaPipe's dedicated Hands model to locate the hand each frame. Real-
-camera testing showed that model dropping detection entirely on a
-majority of individual frames even during a continuous, genuine grip —
-not rare flicker — which no amount of threshold tuning or gap-tolerance
-patching made reliably solvable, because the signal it depended on simply
-wasn't there most frames. The object detector (color/YOLO), by contrast,
-was rock solid throughout that same testing (consistently 70-90%+
-confidence). So: track the *object's own position* instead. A PICK is the
-object transitioning from resting to moving; a PLACE is it coming back to
-rest inside a configured zone. Hand landmarks are computed only for the
-on-screen overlay now (see backend/services/overlay.py) — nothing here
-reads them.
+Design history:
+  1. Hand-to-object distance, frame-debounced (2 consecutive touching
+     frames). Failed in real testing: MediaPipe's Hands model dropped
+     detection on a majority of individual frames even during a
+     continuous, genuine grip, so the 2-frame debounce routinely never
+     completed.
+  2. Object motion instead of hand proximity — track the object's own
+     position, PICK = starts moving, PLACE = comes back to rest in a
+     zone. Removed the Hands dependency entirely. Worked better, but
+     real testing (now across machines — Windows and macOS both) still
+     showed object detection itself dropping frames/jittering enough
+     that motion-vs-jitter was hard to call reliably in every lighting
+     setup.
+  3. This version — dwell time, wall-clock seconds not frame counts (so
+     behavior doesn't depend on a given machine's actual frame rate):
+     PICK requires a hand to stay within hand_touch_distance_px of the
+     object *continuously* for pick_dwell_seconds; PLACE requires the
+     object's own position to stay inside a configured zone
+     *continuously* for place_dwell_seconds, independent of whether a
+     hand is anywhere nearby during that window. Sustained dwell is a
+     much more forgiving signal than either single-frame proximity or
+     frame-to-frame motion: a brief detection gap doesn't reset it (see
+     _update_track's gap-tolerance), only a clear break (hand genuinely
+     elsewhere, object genuinely leaves the zone) does.
 
 Units: DetectedObject bboxes from color_detector.py/object_detector.py
-are pixel-space; frame.frame_width/frame_height (see base.py) is used
-only to scale the movement threshold proportionally to actual capture
-resolution (a real webcam frequently delivers a different resolution than
-config.yaml requested).
+are pixel-space; MediaPipe hand landmarks are normalized (0-1 of frame
+size) — both are needed in the same units to compare, which is why this
+reads PerceptionFrame.frame_width/frame_height (see base.py). Dwell
+timers use PerceptionFrame.timestamp (wall-clock, set per-frame by
+whatever produced the frame) rather than a separately injected clock.
 """
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from backend.config.settings import PerceptionSettings
 from backend.perception.base import BBox, DetectedObject, HandFrame, InteractionState, PerceptionFrame
 
-# How many of the most recent box-center samples must all sit within
-# move_threshold of each other to confirm the object has come to rest.
-# Deliberately short: a long window would keep comparing against a stale
-# sample from mid-motion for many frames after the object actually
-# stopped, delaying "placed" detection long after it visibly settled.
-_STILL_WINDOW = 3
-
-# Reference frame width settings.movement_threshold_px is calibrated
-# against (matches tests/test_interaction.py's fixtures at scale=1.0). A
-# real webcam frequently delivers a different actual resolution than
+# Reference frame width hand_touch_distance_px is calibrated against
+# (matches tests/test_interaction.py's fixtures at scale=1.0). A real
+# webcam frequently delivers a different actual resolution than
 # config.yaml's requested camera.frame_width, so this scales the
 # threshold to whatever the camera's *actual* capture width turns out to
-# be — see interaction.py's git history for the same reasoning applied to
-# the old hand-distance thresholds.
+# be — see interaction.py's git history for the same reasoning applied
+# across every version of this module.
 _THRESHOLD_REFERENCE_FRAME_WIDTH = 640
 
-
 # Fraction of the object's own bbox area that must overlap a zone's bbox
-# for the object to count as "placed there". A single point test (center
-# or base) is fragile against real-camera perspective: an object's actual
+# for the object to count as "in" it. A single point test (center or
+# base) is fragile against real-camera perspective: an object's actual
 # footprint on the table routinely doesn't line up pixel-perfectly with a
 # zone rectangle calibrated ahead of time, especially near a zone's edge
 # or with the camera at an angle. Overlap area matches the physical
@@ -72,9 +74,6 @@ def bbox_center(bbox: BBox) -> tuple[float, float]:
 
 
 def hand_center_px(hand: HandFrame, frame_w: int, frame_h: int) -> tuple[float, float] | None:
-    """Kept for the on-screen overlay/debug HUD only (tools/live_demo.py,
-    backend/services/overlay.py) — no longer read by any interaction
-    logic in this module. See the module docstring for why."""
     pts = [lm for lm in hand.landmarks if lm.name in _PALM_LANDMARKS]
     if len(pts) < len(_PALM_LANDMARKS):
         return None
@@ -103,21 +102,30 @@ class InteractionEvent:
     # whenever state is OBJECT_PLACED (and persists while it stays resting
     # there). None otherwise, or if it's outside every configured zone.
     zone: Optional[str] = None
+    # Progress of whichever dwell timer is currently running (elapsed
+    # seconds, seconds required) — the hand-contact timer while watching
+    # for a pick, or the zone-occupancy timer while held and inside a
+    # zone. None, None when no timer is currently running. Introspection
+    # only (tools/live_demo.py's debug HUD) — not read by any recognition
+    # logic.
+    dwell_elapsed: Optional[float] = None
+    dwell_required: Optional[float] = None
 
 
 @dataclass
 class _ObjectTrack:
     state: InteractionState = InteractionState.NONE
-    # Last _STILL_WINDOW positions — used only to detect settling back to
-    # rest while currently held (short on purpose, see _STILL_WINDOW).
-    recent: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=_STILL_WINDOW))
-    # The object's last confirmed-resting position — the reference point a
-    # fresh pick's displacement is measured against. Unlike `recent`, this
-    # doesn't age out of a sliding window, so a slow, deliberate lift over
-    # many small-per-frame steps still accumulates a real displacement
-    # from it instead of only ever being compared to a few frames ago.
-    anchor: Optional[tuple[float, float]] = None
     zone: Optional[str] = None
+    # Wall-clock timestamp (PerceptionFrame.timestamp) a hand first came
+    # within hand_touch_distance_px, continuously since — reset to None
+    # the moment a frame clearly shows the hand elsewhere. None means "not
+    # currently in contact".
+    touch_started_at: Optional[float] = None
+    # Wall-clock timestamp the object first entered `dwelling_zone`,
+    # continuously since — reset to None the moment it's observed outside
+    # every zone. None means "not currently dwelling in a zone".
+    zone_entered_at: Optional[float] = None
+    dwelling_zone: Optional[str] = None
 
 
 def tracked_classes_for(settings: PerceptionSettings) -> list[str]:
@@ -158,7 +166,8 @@ def zone_overlapping(obj_bbox: BBox, zones: list[DetectedObject]) -> Optional[st
 
 class InteractionReasoner:
     """Maintains per-object InteractionState (and, v2.0, current zone)
-    across frames, purely from each tracked object's own position history.
+    across frames, from dwell timers on hand-to-object distance (pick) and
+    object-to-zone overlap (place).
 
     Tracked object classes come from whichever detector backend is
     configured (settings.colors for HSV, settings.yolo_classes for YOLO)
@@ -185,17 +194,40 @@ class InteractionReasoner:
 
         objects_by_class = {obj.cls: obj for obj in frame.objects}
         zones = [objects_by_class[name] for name in self.settings.target_zones if name in objects_by_class]
-        move_threshold = self.settings.movement_threshold_px * (frame.frame_width / _THRESHOLD_REFERENCE_FRAME_WIDTH)
+        hand_centers = [
+            c
+            for h in frame.hands
+            if (c := hand_center_px(h, frame.frame_width, frame.frame_height)) is not None
+        ]
+        scale = frame.frame_width / _THRESHOLD_REFERENCE_FRAME_WIDTH
+        touch_threshold = self.settings.hand_touch_distance_px * scale
 
         events: dict[str, InteractionEvent] = {}
         for cls in self._tracked_classes:
             track = self._tracks[cls]
-            new_state, new_zone = self._update_track(track, objects_by_class.get(cls), zones, move_threshold)
+            new_state, new_zone = self._update_track(
+                track, objects_by_class.get(cls), hand_centers, zones, touch_threshold, frame.timestamp
+            )
             changed = new_state != track.state
             track.state = new_state
             track.zone = new_zone
-            events[cls] = InteractionEvent(object_class=cls, state=new_state, changed=changed, zone=new_zone)
+            dwell_elapsed, dwell_required = self._dwell_progress(track, frame.timestamp)
+            events[cls] = InteractionEvent(
+                object_class=cls,
+                state=new_state,
+                changed=changed,
+                zone=new_zone,
+                dwell_elapsed=dwell_elapsed,
+                dwell_required=dwell_required,
+            )
         return events
+
+    def _dwell_progress(self, track: _ObjectTrack, now: float) -> tuple[Optional[float], Optional[float]]:
+        if track.state == InteractionState.OBJECT_BEING_HELD and track.zone_entered_at is not None:
+            return now - track.zone_entered_at, self.settings.place_dwell_seconds
+        if track.touch_started_at is not None:
+            return now - track.touch_started_at, self.settings.pick_dwell_seconds
+        return None, None
 
     # -- internals -----------------------------------------------------------
 
@@ -203,73 +235,98 @@ class InteractionReasoner:
         self,
         track: _ObjectTrack,
         obj: DetectedObject | None,
+        hand_centers: list[tuple[float, float]],
         zones: list[DetectedObject],
-        move_threshold: float,
+        touch_threshold: float,
+        now: float,
     ) -> tuple[InteractionState, Optional[str]]:
-        if obj is None:
-            # Not detected this frame — most often a hand briefly occluding
-            # it mid-carry, or a momentary detector miss. Hold the last
-            # known state rather than resetting; the object hasn't been
-            # observed to have actually changed.
+        if track.state == InteractionState.OBJECT_BEING_HELD:
+            return self._update_held(track, obj, zones, now)
+        return self._update_watching_for_pick(track, obj, hand_centers, touch_threshold, now)
+
+    def _update_watching_for_pick(
+        self,
+        track: _ObjectTrack,
+        obj: DetectedObject | None,
+        hand_centers: list[tuple[float, float]],
+        touch_threshold: float,
+        now: float,
+    ) -> tuple[InteractionState, Optional[str]]:
+        """State is NONE, OBJECT_RELEASED, or OBJECT_PLACED — watching for
+        a hand to dwell near the object long enough to confirm a fresh
+        pick. A resting (RELEASED/PLACED) object requires the hand to be
+        *inside* its bbox to start the dwell timer, not just within the
+        broader touch_threshold radius — objects placed close together on
+        a real table mean a hand reaching for a *different* object
+        routinely passes within touch_threshold of one that's already
+        resting, which would otherwise restart its pick timer constantly.
+        A never-touched object (state NONE) uses the more generous
+        touch_threshold, since there's no "already resting nearby" object
+        for a passing hand to be confused with yet.
+        """
+        resting = track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED)
+
+        if obj is None or not hand_centers:
+            # No object and/or no hand observed this frame — genuinely
+            # ambiguous (detector miss vs. hand truly elsewhere), not
+            # evidence contact broke. Preserve whatever dwell progress
+            # exists rather than resetting it on every dropped frame.
             return track.state, track.zone
 
         box_center = bbox_center(obj.bbox)
-        track.recent.append(box_center)
-        if track.anchor is None:
-            track.anchor = box_center
+        nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
 
-        currently_held = track.state == InteractionState.OBJECT_BEING_HELD
-        currently_resting = track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED)
+        in_contact = point_in_bbox(nearest_hand, obj.bbox) if resting else _dist(nearest_hand, box_center) <= touch_threshold
 
-        if currently_held:
-            if not self._has_settled(track, move_threshold):
-                return InteractionState.OBJECT_BEING_HELD, None
-            # Just came to rest — this hold's natural end: settled either
-            # into a configured target zone (placed) or elsewhere (just
-            # released/dropped). This position becomes the new anchor a
-            # future pick's displacement will be measured against.
-            track.anchor = box_center
-            zone_name = zone_overlapping(obj.bbox, zones)
-            if zone_name is not None:
-                return InteractionState.OBJECT_PLACED, zone_name
-            return InteractionState.OBJECT_RELEASED, None
+        if not in_contact:
+            track.touch_started_at = None
+            return track.state, track.zone
 
-        if _dist(box_center, track.anchor) > move_threshold:
+        if track.touch_started_at is None:
+            track.touch_started_at = now
+        elif now - track.touch_started_at >= self.settings.pick_dwell_seconds:
+            # Pick confirmed — start this hold with a clean zone-dwell
+            # slate (any zone dwell tracked while it was previously
+            # resting is irrelevant to this new pick).
+            track.touch_started_at = None
+            track.zone_entered_at = None
+            track.dwelling_zone = None
+            return InteractionState.OBJECT_BEING_HELD, None
+        return track.state, track.zone
+
+    def _update_held(
+        self,
+        track: _ObjectTrack,
+        obj: DetectedObject | None,
+        zones: list[DetectedObject],
+        now: float,
+    ) -> tuple[InteractionState, Optional[str]]:
+        """State is OBJECT_BEING_HELD — watching for the object's own
+        position to dwell inside a zone long enough to confirm a place.
+        Hand position is irrelevant here by design (a hand lingering in
+        or near the zone while setting the object down must not disrupt
+        this); only where the *object* is matters."""
+        if obj is None:
+            # Not detected this frame (often a hand occluding it
+            # mid-carry) — preserve dwell progress rather than resetting.
             return InteractionState.OBJECT_BEING_HELD, None
 
-        if currently_resting:
-            return self._resting_zone_state(track.state, track.zone, obj.bbox, zones)
+        zone_name = zone_overlapping(obj.bbox, zones)
+        if zone_name is None:
+            track.zone_entered_at = None
+            track.dwelling_zone = None
+            return InteractionState.OBJECT_BEING_HELD, None
 
-        return InteractionState.NONE, None
+        if track.dwelling_zone != zone_name:
+            # Entered this zone (or switched from a different one) —
+            # restart the dwell timer for it.
+            track.dwelling_zone = zone_name
+            track.zone_entered_at = now
+            return InteractionState.OBJECT_BEING_HELD, None
 
-    @staticmethod
-    def _has_settled(track: _ObjectTrack, move_threshold: float) -> bool:
-        """True once the last _STILL_WINDOW observed positions are all
-        close together — i.e. the object has stopped moving, regardless of
-        how it was moving before that window."""
-        if len(track.recent) < _STILL_WINDOW:
-            return False
-        newest = track.recent[-1]
-        return all(_dist(p, newest) <= move_threshold for p in track.recent)
-
-    @staticmethod
-    def _resting_zone_state(
-        current_state: InteractionState, current_zone: Optional[str], obj_bbox: BBox, zones: list[DetectedObject]
-    ) -> tuple[InteractionState, Optional[str]]:
-        """PLACED/RELEASED + zone for a resting object. RELEASED is
-        re-derived from the object's *current* bbox every frame rather than
-        frozen at the moment it stopped moving — settling caught a frame
-        early (bbox estimate still stabilizing) would otherwise permanently
-        misclassify it as RELEASED even once it's sitting squarely inside
-        the zone in every subsequent frame.
-        PLACED, once reached, is sticky and never auto-reverts, though: a
-        bbox estimate hovering right at a zone's overlap-ratio threshold
-        would otherwise flicker PLACED/RELEASED frame to frame, and the
-        temporal smoother (needs several *consecutive* stable frames) would
-        never accumulate enough of the same candidate to ever confirm the
-        PLACE action. Only fresh movement (which exits this resting state
-        entirely) resets that."""
-        if current_state == InteractionState.OBJECT_PLACED:
-            return InteractionState.OBJECT_PLACED, current_zone
-        zone_name = zone_overlapping(obj_bbox, zones)
-        return (InteractionState.OBJECT_PLACED, zone_name) if zone_name else (InteractionState.OBJECT_RELEASED, None)
+        if now - track.zone_entered_at >= self.settings.place_dwell_seconds:
+            placed_zone = track.dwelling_zone
+            track.zone_entered_at = None
+            track.dwelling_zone = None
+            return InteractionState.OBJECT_PLACED, placed_zone
+        return InteractionState.OBJECT_BEING_HELD, None

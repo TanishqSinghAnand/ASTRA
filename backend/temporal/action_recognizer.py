@@ -10,26 +10,25 @@ color_detector.py's HSV thresholding (see training/ for the swap-in point
 once one exists).
 
 Action mapping (only PICK/PLACE — this experiment has no other gesture):
-  - While an object is OBJECT_BEING_HELD (interaction.py: currently
-    moving), the candidate is "PICK_<CLASS>" (e.g. PICK_CELL_PHONE) for as
-    long as the motion lasts. No separate "was it picked up from outside a
-    zone" validity check — unlike the hand-proximity-based design this
-    replaced, motion itself is unambiguous: an object doesn't move on its
-    own, so any transition into OBJECT_BEING_HELD is a genuine pick,
-    regardless of where the object happened to be resting beforehand
-    (which, for a real tabletop, is not always "neatly outside every
-    target zone" — two boxes sharing a small table routinely means one's
-    neutral resting spot overlaps the other's target zone). This mirrors
-    the class naming color_detector.py/object_detector.py already use
-    ("cell_phone") upper-cased to match ExperimentStep.action_key's
-    convention ("CELL_PHONE") — no explicit per-object mapping table
-    needed.
-  - While an object sits OBJECT_PLACED (persists until it moves again, per
-    interaction.py), the candidate is "PLACE_<CLASS>", and (v2.0) the
-    emitted ActionPrediction.location names which configured zone it
-    landed in — see zones.py and validator.py's WRONG_LOCATION handling.
-  - OBJECT_RELEASED (settled outside every zone) maps to no action — this
-    sample experiment has no "drop"/failure gesture, only PICK/PLACE.
+  - While an object is OBJECT_BEING_HELD (interaction.py: a hand dwelled
+    near it continuously for pick_dwell_seconds), the candidate is
+    "PICK_<CLASS>" (e.g. PICK_CELL_PHONE) for as long as the hold lasts.
+    No separate "was it picked up from outside a zone" validity check —
+    the dwell timer requiring sustained *contact* is itself already
+    enough evidence of a genuine pick regardless of where the object
+    happened to be resting beforehand (which, for a real tabletop, is not
+    always "neatly outside every target zone" — two boxes sharing a small
+    table routinely means one's neutral resting spot overlaps the other's
+    target zone). This mirrors the class naming
+    color_detector.py/object_detector.py already use ("cell_phone")
+    upper-cased to match ExperimentStep.action_key's convention
+    ("CELL_PHONE") — no explicit per-object mapping table needed.
+  - While an object sits OBJECT_PLACED (its own position dwelled inside a
+    zone continuously for place_dwell_seconds, persisting until a fresh
+    pick, per interaction.py), the candidate is "PLACE_<CLASS>", and
+    (v2.0) the emitted ActionPrediction.location names which configured
+    zone it landed in — see zones.py and validator.py's WRONG_LOCATION
+    handling.
 
 COMPLETE_EXPERIMENT (design decision, per spec): there is no physical
 gesture for "close out the experiment" — step 5 in bas_sample_001.json has
@@ -42,8 +41,8 @@ Phase 5/6 must do with validator.py.
 
 Confidence is a documented heuristic, not a calibrated probability (same
 honesty rule as color_detector.py): it blends the interaction reasoner's
-own certainty — fixed high, since crossing the movement threshold is a
-deterministic geometric signal, not a probabilistic one — with the
+own certainty — fixed high, since clearing a dwell-time threshold is a
+deterministic timing signal, not a probabilistic one — with the
 detector's own confidence for that object, averaged over a small rolling
 window (which genuinely varies with lighting/blob quality and is the more
 informative half of the blend).

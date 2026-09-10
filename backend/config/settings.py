@@ -45,13 +45,25 @@ class ColorSpec(BaseModel):
 
 class PerceptionSettings(BaseModel):
     confidence_threshold: float = 0.60
-    # Displacement (px, at a 640px-wide reference frame — see
+    # Distance (px, at a 640px-wide reference frame — see
     # backend/perception/interaction.py's _THRESHOLD_REFERENCE_FRAME_WIDTH)
-    # that counts as an object genuinely moving rather than detection
-    # jitter. Drives PICK/PLACE detection directly — interaction.py tracks
-    # each object's own position, not hand proximity (see its module
-    # docstring for why the design changed).
-    movement_threshold_px: float = 28.0
+    # a hand must stay within, continuously, to confirm a PICK — see
+    # pick_dwell_seconds below. Scaled to actual capture resolution, same
+    # as the old hand_object_touch_distance_px this replaces.
+    hand_touch_distance_px: float = 150.0
+    # How many continuous seconds a hand must stay within
+    # hand_touch_distance_px of an object before it counts as picked up.
+    # Wall-clock seconds, not a frame count, so behavior is the same
+    # regardless of the machine's actual frame rate (a slower laptop
+    # shouldn't need a shorter "hold still" gesture than a faster one).
+    # Requiring sustained contact — not just one close frame — filters out
+    # a hand briefly passing near the object without truly gripping it.
+    pick_dwell_seconds: float = 3.0
+    # How many continuous seconds an object's position must stay inside a
+    # configured zone before it counts as placed there. Checked purely
+    # from the object's own detected position — a hand lingering in or
+    # near the zone during this window doesn't reset it either way.
+    place_dwell_seconds: float = 3.0
     min_box_contour_area: int = 800
     experiment_area: tuple[float, float, float, float] = (0.55, 0.55, 0.85, 0.85)
     colors: dict[str, ColorSpec] = Field(default_factory=dict)

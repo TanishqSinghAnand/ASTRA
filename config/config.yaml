@@ -19,16 +19,17 @@ camera:
 # --- Perception thresholds ---
 perception:
   confidence_threshold: 0.60      # below this -> "Analyzing..." not a verdict
-  # PICK/PLACE is detected from the object's own movement, not hand
-  # proximity (backend/perception/interaction.py — hand-tracking proved
-  # too unreliable in real testing to drive detection directly). This is
-  # the displacement, at a 640px-wide reference frame, that counts as a
-  # genuine move rather than detection jitter; scaled to the camera's
-  # *actual* capture width, which often differs from the resolution
-  # requested above. Raise it if a stationary box's own detection jitter
-  # ever gets mistaken for a pick; lower it if a real, deliberate lift
-  # isn't registering.
-  movement_threshold_px: 28        # at 640px reference width
+  # PICK/PLACE is detected by dwell time, not motion or a frame-count
+  # debounce (backend/perception/interaction.py — both proved too
+  # unreliable in real testing across machines/lighting). A PICK needs a
+  # hand to stay within hand_touch_distance_px of the object continuously
+  # for pick_dwell_seconds; a PLACE needs the object's own position to
+  # stay inside a zone continuously for place_dwell_seconds, regardless of
+  # hand presence. Wall-clock seconds, not frame counts, so this behaves
+  # the same on a slower machine as a faster one.
+  hand_touch_distance_px: 150     # at 640px reference width, scaled to actual capture width
+  pick_dwell_seconds: 3.0         # continuous hand contact required to confirm a pick
+  place_dwell_seconds: 3.0        # continuous zone dwell required to confirm a place
   min_box_contour_area: 800       # ignore color-noise smaller than this
 
   # Legacy v1 single-area field — ColorBoxDetector always emits it, but

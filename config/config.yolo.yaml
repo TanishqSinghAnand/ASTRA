@@ -19,7 +19,9 @@ camera:
 # --- Perception thresholds ---
 perception:
   confidence_threshold: 0.60
-  movement_threshold_px: 28        # at 640px reference width — see config.yaml's comment
+  hand_touch_distance_px: 150     # at 640px reference width — see config.yaml's comment
+  pick_dwell_seconds: 3.0
+  place_dwell_seconds: 3.0
   min_box_contour_area: 800
 
   experiment_area: [0.0, 0.0, 0.0, 0.0]  # unused by v2.0 (target_zones below)

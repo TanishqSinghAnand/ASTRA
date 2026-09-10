@@ -130,14 +130,18 @@ def main() -> None:
             pframe = perception.process(captured.frame, captured.frame_index)
             prediction = action_recognizer.update(pframe)
 
-            # -- debug: per-object motion state, to see exactly why a pick/
-            # place isn't registering instead of guessing blind. Reflects
-            # action_recognizer.last_events, set by the update() call above
-            # — not a second, separate detection pass.
-            debug_lines: list[str] = [
-                f"{cls}: {event.state.value}" + (f" (zone={event.zone})" if event.zone else "")
-                for cls, event in action_recognizer.last_events.items()
-            ]
+            # -- debug: per-object state + dwell-timer progress, to see
+            # exactly why a pick/place isn't registering instead of
+            # guessing blind. Reflects action_recognizer.last_events, set
+            # by the update() call above — not a second, separate pass.
+            debug_lines: list[str] = []
+            for cls, event in action_recognizer.last_events.items():
+                line = f"{cls}: {event.state.value}"
+                if event.zone:
+                    line += f" (zone={event.zone})"
+                if event.dwell_elapsed is not None:
+                    line += f"  dwell {event.dwell_elapsed:.1f}s/{event.dwell_required:.1f}s"
+                debug_lines.append(line)
             now = time.time()
             if debug_lines and now - last_debug_print > 1.0:
                 last_debug_print = now

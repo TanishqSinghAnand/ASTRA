@@ -66,7 +66,19 @@ class PerceptionSettings(BaseModel):
     place_dwell_seconds: float = 3.0
     min_box_contour_area: int = 800
     experiment_area: tuple[float, float, float, float] = (0.55, 0.55, 0.85, 0.85)
+    # The HSV ranges actually tracked right now, keyed by tracked-class
+    # name (e.g. "black_box") — these names are what ties a color to an
+    # ExperimentStep's object id, so they stay fixed even when --colors
+    # (tools/live_demo.py) swaps which literal color is behind one.
     colors: dict[str, ColorSpec] = Field(default_factory=dict)
+    # A library of common color HSV ranges, keyed by plain name ("black",
+    # "red", "blue", ...) — not tracked by default, just available for
+    # --colors to pull from at runtime (e.g. `--colors black_box=blue`
+    # swaps black_box's ranges for the "blue" preset here) without hand-
+    # editing this file for a quick test with whatever objects are handy.
+    # THESE ARE STARTING POINTS, not tuned against any real room — same
+    # calibration caveat as `colors` above.
+    color_presets: dict[str, ColorSpec] = Field(default_factory=dict)
 
     # --- v2.0: general object detection (backend/perception/object_detector.py) ---
     # "hsv" keeps v1's color-marker approach available; "yolo" is v2.0's

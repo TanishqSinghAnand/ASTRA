@@ -59,6 +59,46 @@ perception:
         - lower: [170, 120, 70]
           upper: [180, 255, 255]
 
+  # A library of common colors `colors` above can be swapped from at
+  # runtime, e.g. `--colors black_box=blue,red_box=green` (tools/
+  # live_demo.py) — see color_presets' comment in settings.py. Starting
+  # points, not tuned against any real room; run tools/calibrate_hsv.py
+  # and paste better ranges back in if one is unreliable for you. Red
+  # needs two ranges because its hue wraps around 0/179 in OpenCV's HSV
+  # space; white is omitted — not separable by HSV against a white table
+  # (see the comment above).
+  color_presets:
+    black:
+      ranges:
+        - lower: [0, 0, 0]
+          upper: [180, 255, 60]
+    red:
+      ranges:
+        - lower: [0, 120, 70]
+          upper: [10, 255, 255]
+        - lower: [170, 120, 70]
+          upper: [180, 255, 255]
+    blue:
+      ranges:
+        - lower: [100, 110, 60]
+          upper: [128, 255, 255]
+    green:
+      ranges:
+        - lower: [40, 70, 70]
+          upper: [80, 255, 255]
+    yellow:
+      ranges:
+        - lower: [20, 100, 100]
+          upper: [35, 255, 255]
+    orange:
+      ranges:
+        - lower: [10, 100, 100]
+          upper: [20, 255, 255]
+    purple:
+      ranges:
+        - lower: [130, 60, 60]
+          upper: [160, 255, 255]
+
   # --- v2.0: general object detection ---
   # "hsv" tracks the color-defined boxes above (black_box/red_box) — no
   # training, same approach v1.0 uses. "yolo" recognizes real

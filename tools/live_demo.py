@@ -20,6 +20,10 @@ Shows, both in the terminal and as an on-screen overlay:
 Usage:
     python tools/live_demo.py --source webcam --index 0
 
+    # Track blue/green objects instead of the default black/red (see
+    # config.yaml's perception.color_presets for the available names):
+    python tools/live_demo.py --source webcam --colors black_box=blue,red_box=green
+
 Press 'q' to quit, 'r' to reset the sequence and start over.
 """
 from __future__ import annotations
@@ -64,6 +68,36 @@ def _print_event(event: SequenceEvent) -> None:
         print(f"      {line}")
 
 
+def _apply_color_overrides(settings, spec: str) -> None:
+    """Parses --colors "black_box=blue,red_box=green" and swaps the named
+    tracked class's HSV ranges for the named preset's (settings.perception.
+    color_presets — see config.yaml), in place. The tracked class name
+    itself — and therefore its link to the experiment's object ids —
+    never changes; only which literal color triggers it does. Useful for
+    a quick test/demo with whatever colored objects are actually on hand,
+    without hand-editing config.yaml."""
+    for pair in spec.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise SystemExit(f"--colors expects NAME=PRESET pairs (e.g. black_box=blue), got: {pair!r}")
+        name, preset_name = (part.strip() for part in pair.split("=", 1))
+        if name not in settings.perception.colors:
+            raise SystemExit(
+                f"--colors: {name!r} isn't a tracked class in this config "
+                f"(available: {', '.join(settings.perception.colors) or '(none)'})"
+            )
+        preset = settings.perception.color_presets.get(preset_name)
+        if preset is None:
+            raise SystemExit(
+                f"--colors: unknown preset {preset_name!r} "
+                f"(available: {', '.join(settings.perception.color_presets) or '(none)'})"
+            )
+        settings.perception.colors[name] = preset
+        print(f"[colors] {name} -> {preset_name!r} preset")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", choices=["webcam", "video_file", "synthetic"], default=None)
@@ -75,9 +109,20 @@ def main() -> None:
         help="Path to a config.yaml variant (default: config/config.yaml). "
              "E.g. config/config.yolo.yaml for the YOLO cup/bottle setup.",
     )
+    parser.add_argument(
+        "--colors", type=str, default=None,
+        help="Swap which literal color triggers a tracked class, e.g. "
+             "'black_box=blue,red_box=green' — presets come from "
+             "config.yaml's perception.color_presets (black/red/blue/"
+             "green/yellow/orange/purple by default). The tracked class "
+             "name (and its link to the experiment's object ids) stays "
+             "the same; only the HSV ranges behind it change.",
+    )
     args = parser.parse_args()
 
     settings = load_settings(args.config)
+    if args.colors:
+        _apply_color_overrides(settings, args.colors)
     overrides: dict = {}
     if args.source:
         overrides["source"] = args.source

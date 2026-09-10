@@ -107,7 +107,7 @@ def main() -> None:
     parser.add_argument(
         "--config", type=str, default=None,
         help="Path to a config.yaml variant (default: config/config.yaml). "
-             "E.g. config/config.yolo.yaml for the YOLO cup/bottle setup.",
+             "E.g. config/config.yolo.yaml for the YOLO mouse/bottle setup.",
     )
     parser.add_argument(
         "--colors", type=str, default=None,

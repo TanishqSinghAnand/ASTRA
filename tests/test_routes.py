@@ -32,7 +32,7 @@ def test_switch_to_yolo_swaps_experiment():
         body = resp.json()
         assert body["mode"] == "yolo"
         object_ids = set(body["experiment"]["objects"].keys())
-        assert {"CUP", "BOTTLE"} & object_ids
+        assert {"MOUSE", "BOTTLE"} & object_ids
 
         # get_mode reflects the switch too.
         assert client.get("/api/mode").json()["mode"] == "yolo"

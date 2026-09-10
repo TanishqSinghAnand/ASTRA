@@ -1,4 +1,4 @@
-# ASTRA — YOLO variant config (cup/bottle, no color markers needed).
+# ASTRA — YOLO variant config (mouse/bottle, no color markers needed).
 #
 # This is config.yaml's sibling for the pretrained-object-detection path —
 # same interaction/zone logic, different detector_backend. The default
@@ -34,7 +34,7 @@ perception:
   yolo_confidence_threshold: 0.35
   yolo_imgsz: 320
   yolo_classes:                    # COCO class names to track (exact names YOLO uses)
-    - cup                          # displayed to the user as "mug" — COCO has no separate mug class
+    - mouse
     - bottle
 
   # --- v2.0: multiple named placement zones (fraction-of-frame [x1,y1,x2,y2]) ---

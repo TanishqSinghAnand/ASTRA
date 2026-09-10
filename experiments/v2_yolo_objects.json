@@ -3,7 +3,7 @@
   "name": "General Object Placement Demo (v2.0, YOLO)",
   "description": "Pick up everyday objects recognized by a pretrained general object detector (YOLOv8, no color markers, no custom training) and place each in its own designated zone.",
   "objects": {
-    "CUP": { "label": "mug", "color_hint": null },
+    "MOUSE": { "label": "mouse", "color_hint": null },
     "BOTTLE": { "label": "bottle", "color_hint": null },
     "ZONE_A": { "label": "zone A", "color_hint": null },
     "ZONE_B": { "label": "zone B", "color_hint": null }
@@ -12,16 +12,16 @@
     {
       "id": 1,
       "action": "PICK",
-      "object": "CUP",
-      "instruction": "Pick up the mug.",
-      "voice_next": "Next, place the mug in zone A."
+      "object": "MOUSE",
+      "instruction": "Pick up the mouse.",
+      "voice_next": "Next, place the mouse in zone A."
     },
     {
       "id": 2,
       "action": "PLACE",
-      "object": "CUP",
+      "object": "MOUSE",
       "target": "ZONE_A",
-      "instruction": "Place the mug in zone A.",
+      "instruction": "Place the mouse in zone A.",
       "voice_next": "Next, pick up the bottle."
     },
     {

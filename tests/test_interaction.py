@@ -249,6 +249,37 @@ def test_placed_state_persists_until_retouched():
     assert retouch.state == InteractionState.OBJECT_BEING_HELD
 
 
+def test_retouch_of_placed_object_tolerates_hand_just_outside_raw_bbox():
+    """Regression: a real grasp's landmark centroid (wrist + index_mcp +
+    pinky_mcp) routinely lands just outside an already-placed object's own
+    detected bbox -- e.g. gripping from below/the side, wrist trailing
+    below the box -- even though the fingers are plainly in contact.
+    Observed live: re-picking an object placed in the wrong zone silently
+    never started its dwell timer because of this, leaving PLACE stuck
+    forever. The re-pick check now pads the resting object's bbox by half
+    touch_threshold rather than requiring strict containment."""
+    reasoner = InteractionReasoner(_settings())
+    hand = (OUTSIDE_ZONE[0] + 5, OUTSIDE_ZONE[1])
+    reasoner.update(_frame(0.0, OUTSIDE_ZONE, hand))
+    reasoner.update(_frame(PICK_DWELL + 0.1, OUTSIDE_ZONE, hand))
+    t0 = PICK_DWELL + 0.1
+    reasoner.update(_frame(t0 + 0.1, ZONE_CENTER, None))
+    placed = reasoner.update(_frame(t0 + 0.1 + PLACE_DWELL + 0.1, ZONE_CENTER, None))["red_box"]
+    assert placed.state == InteractionState.OBJECT_PLACED
+    t1 = t0 + 0.1 + PLACE_DWELL + 0.1
+
+    # _box()'s bbox around ZONE_CENTER=(500, 380) with half_size=20 is
+    # x:[480,520] y:[360,400] -- this hand is 15px below the raw bbox
+    # (outside it) but within the padded region (touch_threshold=40 -> pad
+    # 20), simulating a wrist trailing just below a held box.
+    just_outside_raw_bbox = (500.0, 415.0)
+    reasoner.update(_frame(t1 + 1.0, ZONE_CENTER, just_outside_raw_bbox))
+    retouch = reasoner.update(
+        _frame(t1 + 1.0 + PICK_DWELL + 0.1, ZONE_CENTER, just_outside_raw_bbox)
+    )["red_box"]
+    assert retouch.state == InteractionState.OBJECT_BEING_HELD
+
+
 def test_reset_clears_all_tracks():
     reasoner = InteractionReasoner(_settings())
     hand = (OUTSIDE_ZONE[0] + 5, OUTSIDE_ZONE[1])

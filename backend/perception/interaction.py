@@ -91,6 +91,10 @@ def point_in_bbox(point: tuple[float, float], bbox: BBox) -> bool:
     return bbox.x1 <= x <= bbox.x2 and bbox.y1 <= y <= bbox.y2
 
 
+def _padded_bbox(bbox: BBox, pad: float) -> BBox:
+    return BBox(x1=bbox.x1 - pad, y1=bbox.y1 - pad, x2=bbox.x2 + pad, y2=bbox.y2 + pad)
+
+
 @dataclass
 class InteractionEvent:
     """Per-object result of one InteractionReasoner.update() call."""
@@ -255,14 +259,24 @@ class InteractionReasoner:
         """State is NONE, OBJECT_RELEASED, or OBJECT_PLACED — watching for
         a hand to dwell near the object long enough to confirm a fresh
         pick. A resting (RELEASED/PLACED) object requires the hand to be
-        *inside* its bbox to start the dwell timer, not just within the
-        broader touch_threshold radius — objects placed close together on
-        a real table mean a hand reaching for a *different* object
-        routinely passes within touch_threshold of one that's already
-        resting, which would otherwise restart its pick timer constantly.
-        A never-touched object (state NONE) uses the more generous
-        touch_threshold, since there's no "already resting nearby" object
-        for a passing hand to be confused with yet.
+        inside its bbox *padded by a fraction of touch_threshold* to start
+        the dwell timer, not the full generous touch_threshold radius a
+        never-touched object gets — objects placed close together on a
+        real table mean a hand reaching for a *different* object routinely
+        passes within touch_threshold of one that's already resting,
+        which would otherwise restart its pick timer constantly. The
+        padding itself (rather than the raw bbox) exists because a real
+        grasp's landmark centroid (wrist + index_mcp + pinky_mcp) routinely
+        lands just outside an object's own detected box — e.g. gripping a
+        tall/narrow item from below or the side, wrist trailing below the
+        box entirely — even though the fingers are plainly in contact.
+        Observed live: re-picking an object already placed in the wrong
+        zone silently never started its dwell timer with the raw bbox,
+        because the hand's computed centroid sat outside it despite a
+        clear grip.
+        A never-touched object (state NONE) uses the full touch_threshold,
+        since there's no "already resting nearby" object for a passing
+        hand to be confused with yet.
         """
         resting = track.state in (InteractionState.OBJECT_RELEASED, InteractionState.OBJECT_PLACED)
 
@@ -276,7 +290,10 @@ class InteractionReasoner:
         box_center = bbox_center(obj.bbox)
         nearest_hand = min(hand_centers, key=lambda h: _dist(h, box_center))
 
-        in_contact = point_in_bbox(nearest_hand, obj.bbox) if resting else _dist(nearest_hand, box_center) <= touch_threshold
+        if resting:
+            in_contact = point_in_bbox(nearest_hand, _padded_bbox(obj.bbox, touch_threshold * 0.5))
+        else:
+            in_contact = _dist(nearest_hand, box_center) <= touch_threshold
 
         if not in_contact:
             track.touch_started_at = None

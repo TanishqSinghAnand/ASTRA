@@ -42,22 +42,19 @@ perception:
   # POINTS, NOT TUNED AGAINST A REAL ROOM. Lighting varies a lot — if
   # detection is unreliable on your actual boxes, run
   # `python tools/calibrate_hsv.py` to find better ranges interactively and
-  # paste the results back in here. Black is brightness-based (low V), so
-  # it's far more sensitive to lighting than hue-based red — calibrating
-  # for your actual room is expected, not optional. White was dropped: a
-  # white object against a white table isn't separable by HSV at all (same
-  # low-saturation/high-value signature as the background).
+  # paste the results back in here. Both are hue-based (not brightness-
+  # based, like black would be), so they hold up more consistently across
+  # lighting than a black/white box would — still worth calibrating for
+  # your actual room, not just trusting these defaults.
   colors:
-    black_box:
+    blue_box:
       ranges:
-        - lower: [0, 0, 0]
-          upper: [180, 255, 60]
-    red_box:
+        - lower: [100, 110, 60]
+          upper: [128, 255, 255]
+    yellow_box:
       ranges:
-        - lower: [0, 120, 70]
-          upper: [10, 255, 255]
-        - lower: [170, 120, 70]
-          upper: [180, 255, 255]
+        - lower: [20, 100, 100]
+          upper: [35, 255, 255]
 
   # A library of common colors `colors` above can be swapped from at
   # runtime, e.g. `--colors black_box=blue,red_box=green` (tools/
@@ -100,7 +97,7 @@ perception:
           upper: [160, 255, 255]
 
   # --- v2.0: general object detection ---
-  # "hsv" tracks the color-defined boxes above (black_box/red_box) — no
+  # "hsv" tracks the color-defined boxes above (blue_box/yellow_box) — no
   # training, same approach v1.0 uses. "yolo" recognizes real
   # object identity (phone, cup, bottle, ...) via a pretrained model instead
   # — no color markers needed, but MediaPipe hand-tracking noise made

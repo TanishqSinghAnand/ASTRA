@@ -109,7 +109,13 @@ export function CameraView({
             />
           </div>
           <span className="font-mono text-xs text-[var(--color-text-faint)]">
-            {dwell.elapsed.toFixed(1)}s / {dwell.required.toFixed(1)}s
+            {/* Clamped for display only: a brief detection gap right at
+                the threshold (tolerated, not reset — see interaction.py)
+                can leave the raw elapsed value sitting past `required`
+                for a frame or two before the next successful detection
+                actually confirms it; showing e.g. "7.2s / 3.0s" reads as
+                stuck rather than "about to confirm". */}
+            {Math.min(dwell.elapsed, dwell.required).toFixed(1)}s / {dwell.required.toFixed(1)}s
           </span>
         </div>
       )}

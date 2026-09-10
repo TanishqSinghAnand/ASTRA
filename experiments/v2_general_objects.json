@@ -1,10 +1,10 @@
 {
   "experiment_id": "V2_GENERAL_OBJECTS_001",
   "name": "General Object Placement Demo (v2.0)",
-  "description": "Pick up a black box and a red box (HSV color detection, same approach as v1.0) and place each in its own designated zone — demonstrates per-object target locations.",
+  "description": "Pick up a blue box and a yellow box (HSV color detection, same approach as v1.0) and place each in its own designated zone — demonstrates per-object target locations.",
   "objects": {
-    "BLACK_BOX": { "label": "black box", "color_hint": "black" },
-    "RED_BOX": { "label": "red box", "color_hint": "red" },
+    "BLUE_BOX": { "label": "blue box", "color_hint": "blue" },
+    "YELLOW_BOX": { "label": "yellow box", "color_hint": "yellow" },
     "ZONE_A": { "label": "zone A", "color_hint": null },
     "ZONE_B": { "label": "zone B", "color_hint": null }
   },
@@ -12,31 +12,31 @@
     {
       "id": 1,
       "action": "PICK",
-      "object": "BLACK_BOX",
-      "instruction": "Pick up the black box.",
-      "voice_next": "Next, place the black box in zone A."
+      "object": "BLUE_BOX",
+      "instruction": "Pick up the blue box.",
+      "voice_next": "Next, place the blue box in zone A."
     },
     {
       "id": 2,
       "action": "PLACE",
-      "object": "BLACK_BOX",
+      "object": "BLUE_BOX",
       "target": "ZONE_A",
-      "instruction": "Place the black box in zone A.",
-      "voice_next": "Next, pick up the red box."
+      "instruction": "Place the blue box in zone A.",
+      "voice_next": "Next, pick up the yellow box."
     },
     {
       "id": 3,
       "action": "PICK",
-      "object": "RED_BOX",
-      "instruction": "Pick up the red box.",
-      "voice_next": "Next, place the red box in zone B."
+      "object": "YELLOW_BOX",
+      "instruction": "Pick up the yellow box.",
+      "voice_next": "Next, place the yellow box in zone B."
     },
     {
       "id": 4,
       "action": "PLACE",
-      "object": "RED_BOX",
+      "object": "YELLOW_BOX",
       "target": "ZONE_B",
-      "instruction": "Place the red box in zone B.",
+      "instruction": "Place the yellow box in zone B.",
       "voice_next": "Experiment completed successfully."
     },
     {
